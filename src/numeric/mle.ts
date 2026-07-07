@@ -11,11 +11,7 @@ const LOG_PI = Math.log(Math.PI);
 const LOG_2PI = Math.log(2 * Math.PI);
 
 /** Log-likelihood that the data has rank `rank`, given the eigenvalue spectrum. */
-export function assessDimension(
-  spectrum: Float64Array,
-  rank: number,
-  nSamples: number,
-): number {
+export function assessDimension(spectrum: Float64Array, rank: number, nSamples: number): number {
   const p = spectrum.length;
   if (!(rank >= 1 && rank < p)) {
     throw new Error('the tested rank should be in [1, n_features - 1]');

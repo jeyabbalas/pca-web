@@ -3,9 +3,10 @@
  * `_BasePCA`: transform / inverseTransform / getCovariance / getPrecision /
  * getFeatureNamesOut operating on the fitted state.
  */
+
+import { asMatrix, Matrix, type MatrixInput } from './matrix.js';
 import { matmul, matmulTransB } from './numeric/blas.js';
 import { inverse } from './numeric/lu.js';
-import { Matrix, asMatrix, type MatrixInput } from './matrix.js';
 import { type Dtype, dtypeOf, epsFor, type FloatArray } from './types.js';
 import { assertAllFinite, checkFeatureCount, NotFittedError } from './validation.js';
 

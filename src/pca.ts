@@ -8,6 +8,7 @@
  * `svd_flip(u_based_decision=False)` sign convention.
  */
 import { BasePCA, castTo, promoteDtype } from './base.js';
+import { asMatrix, Matrix, type MatrixInput } from './matrix.js';
 import { syrkT } from './numeric/blas.js';
 import { eigh } from './numeric/eigh.js';
 import { lanczosSvd } from './numeric/lanczos.js';
@@ -18,7 +19,6 @@ import { checkRandomState, RandomState } from './numeric/rng.js';
 import { centerInPlace, colMeans, cumsum, searchsortedRight } from './numeric/stats.js';
 import { svd } from './numeric/svd.js';
 import { svdFlipVBased } from './numeric/svdflip.js';
-import { Matrix, asMatrix, type MatrixInput } from './matrix.js';
 import type { FloatArray } from './types.js';
 import { assertAllFinite, checkFeatureCount } from './validation.js';
 
@@ -198,8 +198,7 @@ export class PCA extends BasePCA {
     let solver = this.opts.svdSolver;
     const minDim = Math.min(X.rows, X.cols);
     const ncOpt = this.opts.nComponents;
-    const nc: number | 'mle' =
-      ncOpt === null ? (solver !== 'arpack' ? minDim : minDim - 1) : ncOpt;
+    const nc: number | 'mle' = ncOpt === null ? (solver !== 'arpack' ? minDim : minDim - 1) : ncOpt;
 
     if (solver === 'auto') {
       // Tall-and-skinny problems are best handled by precomputing the covariance.

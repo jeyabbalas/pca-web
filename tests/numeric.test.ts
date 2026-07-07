@@ -19,12 +19,42 @@ describe('numeric kernels vs numpy/scipy fixtures', () => {
       const s = svd(a, m, n).s;
       assertClose(s, getArray(suite, c.arrays.svd_s), T15, `${c.id}: singular values`);
 
+      // Numerical rank: factor columns beyond it are implementation-defined
+      // for rank-deficient inputs (QR reflector directions and LU pivot
+      // choices there are decided by ~1e-16 residual noise), so elementwise
+      // comparison against scipy is only meaningful for the leading columns.
+      const sRef = getArray(suite, c.arrays.svd_s);
+      let rankA = 0;
+      while (rankA < s.length && sRef[rankA] > sRef[0] * 1e-10) {
+        rankA++;
+      }
+      const kDim = Math.min(m, n); // economy Q is m×kDim, R is kDim×n
+
       const { q, r } = qrEconomic(a, m, n);
-      assertClose(q, getArray(suite, c.arrays.qr_q), T15, `${c.id}: Q`);
-      assertClose(r, getArray(suite, c.arrays.qr_r), T15, `${c.id}: R`);
+      const rRef = getArray(suite, c.arrays.qr_r);
+      assertClose(r, rRef, T15, `${c.id}: R`);
+      const qRef = getArray(suite, c.arrays.qr_q);
+      for (let j = 0; j < Math.min(kDim, rankA); j++) {
+        const col = [];
+        const colRef = [];
+        for (let i = 0; i < m; i++) {
+          col.push(q[i * kDim + j]);
+          colRef.push(qRef[i * kDim + j]);
+        }
+        assertClose(col, colRef, T15, `${c.id}: Q column ${j}`);
+      }
 
       const pl = permutedL(luFactor(a, m, n), m, n);
-      assertClose(pl, getArray(suite, c.arrays.lu_pl), T15, `${c.id}: PL`);
+      const plRef = getArray(suite, c.arrays.lu_pl);
+      for (let j = 0; j < Math.min(kDim, rankA); j++) {
+        const col = [];
+        const colRef = [];
+        for (let i = 0; i < m; i++) {
+          col.push(pl[i * kDim + j]);
+          colRef.push(plRef[i * kDim + j]);
+        }
+        assertClose(col, colRef, T15, `${c.id}: PL column ${j}`);
+      }
 
       if (c.arrays.sym) {
         const sym = Float64Array.from(getArray(suite, c.arrays.sym));

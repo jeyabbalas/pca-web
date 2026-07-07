@@ -40,7 +40,9 @@ describe('RandomState replica vs numpy fixtures', () => {
       rs3.standardNormal(parts[4]);
       const mix = Float64Array.from(parts.flatMap((p) => Array.from(p)));
       for (let i = 0; i < mix.length; i++) {
-        expect(Math.abs(mix[i] - mixed[i])).toBeLessThanOrEqual(1e-13 * Math.abs(mixed[i]) + 1e-300);
+        expect(Math.abs(mix[i] - mixed[i])).toBeLessThanOrEqual(
+          1e-13 * Math.abs(mixed[i]) + 1e-300,
+        );
       }
 
       const mat = getArray(suite, c.arrays.normal_7x3_flat);

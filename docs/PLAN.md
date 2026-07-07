@@ -11,15 +11,16 @@ Decisions locked with the user (2026-07-07):
 
 - [x] 0. Scaffold: configs, deps, venv, plan docs
 - [x] 1. Read sklearn 1.9.0 source → docs/SPEC_NOTES.md (the porting spec)
-- [ ] 2. Numerics core (src/numeric/): gemm/syrk, Golub–Reinsch SVD, symmetric eigh,
+- [x] 2. Numerics core (src/numeric/): gemm/syrk, Golub–Reinsch SVD, symmetric eigh,
       Householder QR, partial-pivot LU (permute_l), Cholesky/slogdet/inv, Lanczos
       truncated SVD (arpack equivalent), numpy MT19937 RandomState replica, svd_flip,
       lgamma. Unit tests vs numpy fixtures.
-- [ ] 3. Fixture oracle: python/generate_fixtures.py → fixtures/ (JSON + .bin),
+- [x] 3. Fixture oracle: python/generate_fixtures.py → fixtures/ (JSON + .bin),
       PCA + IncrementalPCA cases + numerics + RNG stream fixtures. Committed.
-- [ ] 4. PCA class (all solvers/modes/methods/attributes).
-- [ ] 5. IncrementalPCA.
-- [ ] 6. Parity suite green (documented tolerances).
+- [x] 4. PCA class (all solvers/modes/methods/attributes). Parity 80/80.
+- [x] 5. IncrementalPCA. Parity 16/16 incl. per-step partial_fit state.
+- [x] 6. Parity suite green — 126 tests (parity + API behavior + RNG + numerics);
+      per-class tolerances documented in tests, observed maxima printed per run.
 - [ ] 7. WebGPU backend (subpath export) + CPU fallback equivalence.
 - [ ] 8. Playwright browser/GPU harness; run GPU tests for real on this Mac.
 - [ ] 9. Benchmarks CPU vs GPU.

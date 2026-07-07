@@ -4,10 +4,10 @@
  * dataset never needs to reside in memory at once.
  */
 import { BasePCA, castTo } from './base.js';
+import { asMatrix, Matrix, type MatrixInput } from './matrix.js';
 import { colMeans, incrementalMeanAndVar } from './numeric/stats.js';
 import { svd } from './numeric/svd.js';
 import { svdFlipVBased } from './numeric/svdflip.js';
-import { Matrix, asMatrix, type MatrixInput } from './matrix.js';
 import type { Dtype, FloatArray } from './types.js';
 import { assertAllFinite, checkFeatureCount } from './validation.js';
 
@@ -125,7 +125,9 @@ export class IncrementalPCA extends BasePCA {
     const xm = asMatrix(X);
     assertAllFinite(xm, 'IncrementalPCA.fit');
     if (xm.rows < 1 || xm.cols < 1) {
-      throw new Error(`Found array with shape (${xm.rows}, ${xm.cols}); at least 1 sample and 1 feature required`);
+      throw new Error(
+        `Found array with shape (${xm.rows}, ${xm.cols}); at least 1 sample and 1 feature required`,
+      );
     }
     const work = this.opts.copy ? xm.copy() : xm;
     const n = work.rows;
@@ -146,7 +148,9 @@ export class IncrementalPCA extends BasePCA {
     const xm = asMatrix(X);
     assertAllFinite(xm, 'IncrementalPCA.partialFit');
     if (xm.rows < 1 || xm.cols < 1) {
-      throw new Error(`Found array with shape (${xm.rows}, ${xm.cols}); at least 1 sample and 1 feature required`);
+      throw new Error(
+        `Found array with shape (${xm.rows}, ${xm.cols}); at least 1 sample and 1 feature required`,
+      );
     }
     if (this.nFeaturesIn_ > 0 && this.hasComponentsAttr_) {
       checkFeatureCount(xm, this.nFeaturesIn_, this.estimatorName);
@@ -202,14 +206,7 @@ export class IncrementalPCA extends BasePCA {
     const k = this.nComponents_;
 
     // Update running statistics (float64, like sklearn's float64 accumulators).
-    const stats = incrementalMeanAndVar(
-      X.data,
-      n,
-      p,
-      this.meanF64_,
-      this.var_,
-      this.nSamplesSeen_,
-    );
+    const stats = incrementalMeanAndVar(X.data, n, p, this.meanF64_, this.var_, this.nSamplesSeen_);
     const nTotal = stats.count;
 
     // Build the matrix to decompose.

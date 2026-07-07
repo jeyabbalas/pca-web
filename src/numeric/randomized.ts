@@ -11,7 +11,7 @@ import { matmul, matmulTransA, transpose } from './blas.js';
 import { luFactor, permutedL } from './lu.js';
 import { qrEconomic } from './qr.js';
 import type { RandomState } from './rng.js';
-import { svd, type SvdResult } from './svd.js';
+import { type SvdResult, svd } from './svd.js';
 
 export interface RandomizedSvdOptions {
   nOversamples: number;
@@ -78,7 +78,7 @@ export function randomizedSvd(
   for (let it = 0; it < nIter; it++) {
     let t: Float64Array = mulAeff(q, qWidth); // effRows × qWidth
     t = applyNormalizer(t, effRows, qWidth);
-    let tWidth = normalizer === 'none' ? qWidth : Math.min(effRows, qWidth);
+    const tWidth = normalizer === 'none' ? qWidth : Math.min(effRows, qWidth);
     q = mulAeffT(t, tWidth); // effCols × tWidth
     q = applyNormalizer(q, effCols, tWidth);
     qWidth = normalizer === 'none' ? tWidth : Math.min(effCols, tWidth);

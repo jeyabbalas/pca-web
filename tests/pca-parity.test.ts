@@ -10,7 +10,6 @@
  * comparison (their variances are still compared, near zero).
  */
 import { afterAll, describe, expect, it } from 'vitest';
-import { Matrix } from '../src/matrix.js';
 import { PCA, type PCAOptions, type PowerIterationNormalizer, type SvdSolver } from '../src/pca.js';
 import type { FloatArray } from '../src/types.js';
 import { assertClose, assertScalarClose, observedReport, type Tol } from './helpers/compare.js';

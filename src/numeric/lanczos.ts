@@ -12,7 +12,7 @@
 import type { FloatArray } from '../types.js';
 import { matvec, matvecTransA } from './blas.js';
 import type { RandomState } from './rng.js';
-import { svd, type SvdResult } from './svd.js';
+import { type SvdResult, svd } from './svd.js';
 
 const EPS = 2 ** -52;
 
