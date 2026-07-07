@@ -21,10 +21,14 @@ Decisions locked with the user (2026-07-07):
 - [x] 5. IncrementalPCA. Parity 16/16 incl. per-step partial_fit state.
 - [x] 6. Parity suite green — 126 tests (parity + API behavior + RNG + numerics);
       per-class tolerances documented in tests, observed maxima printed per run.
-- [ ] 7. WebGPU backend (subpath export) + CPU fallback equivalence.
-- [ ] 8. Playwright browser/GPU harness; run GPU tests for real on this Mac.
-- [ ] 9. Benchmarks CPU vs GPU.
-- [ ] 10. README + packaging polish.
+- [x] 7. WebGPU backend (subpath export) + CPU fallback equivalence.
+      fma-exact products + integer-binned accumulation (Metal fast-math
+      destroys classic EFTs — probed and documented in LESSONS.md).
+- [x] 8. Playwright browser/GPU harness; ran for real (apple/metal-3,
+      headless): 41/41 GPU cases green, GEMM self-check 5.3e-13.
+- [x] 9. Benchmarks CPU vs GPU: 2.7×–7.7× at 50k×200…5k×2000.
+- [x] 10. README (API mapping, solver guide, measured tolerances, fixture
+      regen) + packaging verified via npm pack + clean-room import smoke.
 - [ ] 11. Final verifier-subagent audit + status report.
 
 ## Layout

@@ -1,3 +1,4 @@
+import { appendFileSync } from 'node:fs';
 import { expect } from 'vitest';
 
 export interface Tol {
@@ -54,7 +55,13 @@ export function observedReport(): string {
       `${k.padEnd(44)} n=${String(o.count).padStart(4)} maxAbs=${o.maxAbs.toExponential(2)} maxRel=${o.maxRel.toExponential(2)}`,
     );
   }
-  return lines.join('\n');
+  const report = lines.join('\n');
+  // Vitest intercepts console output in afterAll; PCA_TOL_REPORT gives the
+  // measured-tolerance report a durable sink for documentation runs.
+  if (process.env.PCA_TOL_REPORT) {
+    appendFileSync(process.env.PCA_TOL_REPORT, `${report}\n\n`);
+  }
+  return report;
 }
 
 function record(group: string, s: DiffStats): void {
