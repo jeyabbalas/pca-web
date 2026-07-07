@@ -17,7 +17,7 @@ import { inferDimension } from './numeric/mle.js';
 import { randomizedSvd } from './numeric/randomized.js';
 import { checkRandomState, RandomState } from './numeric/rng.js';
 import { centerInPlace, colMeans, cumsum, searchsortedRight } from './numeric/stats.js';
-import { svd } from './numeric/svd.js';
+import { type SvdResult, svd } from './numeric/svd.js';
 import { svdFlipVBased } from './numeric/svdflip.js';
 import type { FloatArray } from './types.js';
 import { assertAllFinite, checkFeatureCount } from './validation.js';
@@ -75,6 +75,75 @@ interface FitResult {
 
 const SOLVERS: readonly SvdSolver[] = ['auto', 'full', 'covariance_eigh', 'arpack', 'randomized'];
 const NORMALIZERS: readonly PowerIterationNormalizer[] = ['auto', 'QR', 'LU', 'none'];
+
+/**
+ * sklearn 1.9's auto-solver heuristic (`PCA._fit`), as a pure function so the
+ * WebGPU frontend dispatches identically. `nComponents` is the raw option
+ * (null → min(shape) for the heuristic, like sklearn's unset default).
+ */
+export function resolveSvdSolver(
+  rows: number,
+  cols: number,
+  nComponents: number | 'mle' | null,
+  requested: SvdSolver,
+): Exclude<SvdSolver, 'auto'> {
+  if (requested !== 'auto') {
+    return requested;
+  }
+  const minDim = Math.min(rows, cols);
+  const nc = nComponents === null ? minDim : nComponents;
+  // Tall-and-skinny problems are best handled by precomputing the covariance.
+  if (cols <= 1000 && rows >= 10 * cols) {
+    return 'covariance_eigh';
+  }
+  if (Math.max(rows, cols) <= 500 || nc === 'mle') {
+    return 'full';
+  }
+  if (typeof nc === 'number' && nc >= 1 && nc < 0.8 * minDim) {
+    return 'randomized';
+  }
+  // Also the case of nComponents in (0, 1).
+  return 'full';
+}
+
+/**
+ * Fit-time nComponents/solver compatibility checks, shared by the CPU and
+ * WebGPU frontends. Message text mirrors the sklearn errors it was ported
+ * from (camelCased).
+ */
+export function validateNcForSolver(
+  nc: number | 'mle',
+  n: number,
+  p: number,
+  solver: Exclude<SvdSolver, 'auto'>,
+): void {
+  const minDim = Math.min(n, p);
+  if (solver === 'full' || solver === 'covariance_eigh') {
+    if (nc === 'mle') {
+      if (n < p) {
+        throw new Error("nComponents='mle' is only supported if nSamples >= nFeatures");
+      }
+    } else if (!(nc >= 0 && nc <= minDim)) {
+      throw new Error(
+        `nComponents=${nc} must be between 0 and min(nSamples, nFeatures)=${minDim} with svdSolver='${solver}'`,
+      );
+    }
+    return;
+  }
+  if (typeof nc !== 'number') {
+    throw new Error(`nComponents='${nc}' cannot be a string with svdSolver='${solver}'`);
+  }
+  if (!(Number.isInteger(nc) && nc >= 1 && nc <= minDim)) {
+    throw new Error(
+      `nComponents=${nc} must be an integer between 1 and min(nSamples, nFeatures)=${minDim} with svdSolver='${solver}'`,
+    );
+  }
+  if (solver === 'arpack' && nc === minDim) {
+    throw new Error(
+      `nComponents=${nc} must be strictly less than min(nSamples, nFeatures)=${minDim} with svdSolver='arpack'`,
+    );
+  }
+}
 
 function validateOptions(o: PCAOptions): ResolvedOptions {
   const nComponents = o.nComponents === undefined ? null : o.nComponents;
@@ -195,24 +264,10 @@ export class PCA extends BasePCA {
     assertAllFinite(X, 'PCA.fit');
     this.dtype = X.dtype;
 
-    let solver = this.opts.svdSolver;
     const minDim = Math.min(X.rows, X.cols);
     const ncOpt = this.opts.nComponents;
+    const solver = resolveSvdSolver(X.rows, X.cols, ncOpt, this.opts.svdSolver);
     const nc: number | 'mle' = ncOpt === null ? (solver !== 'arpack' ? minDim : minDim - 1) : ncOpt;
-
-    if (solver === 'auto') {
-      // Tall-and-skinny problems are best handled by precomputing the covariance.
-      if (X.cols <= 1000 && X.rows >= 10 * X.cols) {
-        solver = 'covariance_eigh';
-      } else if (Math.max(X.rows, X.cols) <= 500 || nc === 'mle') {
-        solver = 'full';
-      } else if (typeof nc === 'number' && nc >= 1 && nc < 0.8 * minDim) {
-        solver = 'randomized';
-      } else {
-        // Also the case of nComponents in (0, 1).
-        solver = 'full';
-      }
-    }
     this.fitSvdSolver_ = solver;
 
     if (solver === 'full' || solver === 'covariance_eigh') {
@@ -221,21 +276,13 @@ export class PCA extends BasePCA {
     return this.fitTruncated(X, nc, solver);
   }
 
-  private fitFull(X: Matrix, nc: number | 'mle'): FitResult {
+  private fitFull(X: Matrix, nc: number | 'mle', rawGram?: Float64Array): FitResult {
     const n = X.rows;
     const p = X.cols;
     const minDim = Math.min(n, p);
     const solver = this.fitSvdSolver_;
 
-    if (nc === 'mle') {
-      if (n < p) {
-        throw new Error("nComponents='mle' is only supported if nSamples >= nFeatures");
-      }
-    } else if (!(nc >= 0 && nc <= minDim)) {
-      throw new Error(
-        `nComponents=${nc} must be between 0 and min(nSamples, nFeatures)=${minDim} with svdSolver='${solver}'`,
-      );
-    }
+    validateNcForSolver(nc, n, p, solver);
 
     const meanF64 = colMeans(X.data, n, p);
 
@@ -259,8 +306,9 @@ export class PCA extends BasePCA {
       }
     } else {
       // covariance_eigh: form the Gram matrix and center it afterwards,
-      // avoiding any copy or mutation of X.
-      const c = syrkT(X.data, n, p);
+      // avoiding any copy or mutation of X. The WebGPU frontend passes the
+      // Gram in precomputed; everything downstream is shared.
+      const c = rawGram ?? syrkT(X.data, n, p);
       for (let i = 0; i < p; i++) {
         for (let j = 0; j < p; j++) {
           c[i * p + j] = (c[i * p + j] - n * meanF64[i] * meanF64[j]) / (n - 1);
@@ -324,19 +372,8 @@ export class PCA extends BasePCA {
     const p = X.cols;
     const minDim = Math.min(n, p);
 
-    if (typeof nc !== 'number') {
-      throw new Error(`nComponents='${nc}' cannot be a string with svdSolver='${solver}'`);
-    }
-    if (!(Number.isInteger(nc) && nc >= 1 && nc <= minDim)) {
-      throw new Error(
-        `nComponents=${nc} must be an integer between 1 and min(nSamples, nFeatures)=${minDim} with svdSolver='${solver}'`,
-      );
-    }
-    if (solver === 'arpack' && nc === minDim) {
-      throw new Error(
-        `nComponents=${nc} must be strictly less than min(nSamples, nFeatures)=${minDim} with svdSolver='arpack'`,
-      );
-    }
+    validateNcForSolver(nc, n, p, solver);
+    const k = nc as number;
 
     const rng = checkRandomState(this.opts.randomState);
 
@@ -344,30 +381,37 @@ export class PCA extends BasePCA {
     const xc = this.opts.copy ? X.data.slice() : X.data;
     centerInPlace(xc, n, p, meanF64);
 
-    let u: Float64Array;
-    let s: Float64Array;
-    let vt: Float64Array;
+    let dec: SvdResult;
     if (solver === 'arpack') {
       const v0 = new Float64Array(minDim);
       rng.uniform(-1, 1, v0);
       // scipy's svds returns ascending order and sklearn reverses it; our
       // Lanczos yields the same converged triplets already descending.
-      const dec = lanczosSvd(xc, n, p, nc, v0, rng);
-      u = dec.u;
-      s = dec.s;
-      vt = dec.vt;
+      dec = lanczosSvd(xc, n, p, k, v0, rng);
     } else {
-      const dec = randomizedSvd(xc, n, p, nc, {
+      dec = randomizedSvd(xc, n, p, k, {
         nOversamples: this.opts.nOversamples,
         nIter: this.opts.iteratedPower,
         powerIterationNormalizer: this.opts.powerIterationNormalizer,
         rng,
         float32Stream: this.dtype === 'float32',
       });
-      u = dec.u;
-      s = dec.s;
-      vt = dec.vt;
     }
+    return this.finishTruncated(X, xc, meanF64, k, dec);
+  }
+
+  /** Post-decomposition tail of the truncated solvers (flip, variances, store). */
+  private finishTruncated(
+    X: Matrix,
+    xc: FloatArray,
+    meanF64: Float64Array,
+    nc: number,
+    dec: SvdResult,
+  ): FitResult {
+    const n = X.rows;
+    const p = X.cols;
+    const minDim = Math.min(n, p);
+    const { u, s, vt } = dec;
     svdFlipVBased(u, n, vt, nc, p);
 
     const explainedVariance = new Float64Array(nc);
@@ -377,7 +421,7 @@ export class PCA extends BasePCA {
     // Total variance of the centered data. sklearn squares X_centered in
     // place — destroying the caller's data when copy=false — replicated here.
     let totalVar = 0;
-    if (this.opts.copy) {
+    if (xc !== X.data) {
       for (let i = 0; i < xc.length; i++) {
         totalVar += xc[i] * xc[i];
       }
@@ -404,6 +448,54 @@ export class PCA extends BasePCA {
 
     this.storeFitted(X, meanF64, nc, vt, explainedVariance, ratio, s);
     return { u, uCols: nc, s, x: X };
+  }
+
+  // ------------------------------------------------------------------
+  // WebGPU frontend bridges (internal API — not part of the public surface)
+  // ------------------------------------------------------------------
+
+  /**
+   * @internal Completes a covariance_eigh fit from an externally computed
+   * raw Gram matrix XᵀX (uncentered, float64, p×p). Used by the WebGPU
+   * frontend; all semantics downstream of the Gram product are shared with
+   * the CPU path. `rawGram` is consumed (mutated in place).
+   */
+  _fitGram(X: Matrix, rawGram: Float64Array): void {
+    this.prepareFit(X, 'covariance_eigh');
+    const minDim = Math.min(X.rows, X.cols);
+    const ncOpt = this.opts.nComponents;
+    this.fitFull(X, ncOpt === null ? minDim : ncOpt, rawGram);
+  }
+
+  /**
+   * @internal Completes a randomized fit from an externally computed
+   * decomposition of the centered data. `xc` must be the centered training
+   * buffer (X.data itself when copy=false, matching sklearn's destructive
+   * semantics) and `meanF64` the original column means.
+   */
+  _fitDecomposed(X: Matrix, xc: FloatArray, meanF64: Float64Array, dec: SvdResult): void {
+    this.prepareFit(X, 'randomized');
+    const ncOpt = this.opts.nComponents;
+    const nc = ncOpt === null ? Math.min(X.rows, X.cols) : ncOpt;
+    validateNcForSolver(nc, X.rows, X.cols, 'randomized');
+    this.finishTruncated(X, xc, meanF64, nc as number, dec);
+  }
+
+  /** @internal Option access for the WebGPU frontend (read-only). */
+  _resolvedOptions(): Readonly<ResolvedOptions> {
+    return this.opts;
+  }
+
+  /** The fitCore preamble shared by the internal fit bridges. */
+  private prepareFit(X: Matrix, solver: Exclude<SvdSolver, 'auto'>): void {
+    if (X.rows < 1 || X.cols < 1) {
+      throw new Error(
+        `Found array with shape (${X.rows}, ${X.cols}); PCA requires at least 1 sample and 1 feature`,
+      );
+    }
+    assertAllFinite(X, 'PCA.fit');
+    this.dtype = X.dtype;
+    this.fitSvdSolver_ = solver;
   }
 
   private storeFitted(

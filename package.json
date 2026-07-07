@@ -41,7 +41,7 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.tests.json",
     "lint": "biome check .",
     "format": "biome format --write .",
     "test": "vitest run",
@@ -53,6 +53,7 @@
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.2",
+    "@types/node": "^24.13.2",
     "@webgpu/types": "^0.1.71",
     "esbuild": "^0.28.1",
     "playwright": "^1.61.1",

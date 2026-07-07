@@ -34,3 +34,16 @@ One entry per lesson; update rather than duplicate; delete anything proven wrong
   for ev itself (atol ~1e-11 for roundoff-zeros, rtol ~1e-4 for randomized).
 - **Biome's `noFocusedTests` flags any `.fit(` call** (Jasmine's focused `it` is named `fit`) —
   for an sklearn-style API the rule must be off.
+- **Chrome/Dawn on Metal applies fast-math to WGSL: classic error-free transformations are
+  destroyed.** Probed on-device: `b - (s - a)` folds to 0, Dekker `split` folds to identity,
+  and opaque-multiplier variants get contracted into fma (different wrong answer). What
+  survives: `fma(a, b, -a*b)` is exactly the f32 multiply error, single ops round correctly,
+  and integer ops are untouched. Never assume WGSL float semantics — probe the actual driver.
+- **Exact GEMM accumulation on fast-math GPUs: fma-exact products + integer binning.** Each ds
+  cross-product term decomposes exactly (power-of-two scales + fma residuals) into 5×13-bit
+  i32 bins on a per-dispatch grid; i32 accumulation is exact; recombine in f64 on the CPU.
+  Prescale matrices by a power of two at upload (exact) so grids stay in normal-f32 range.
+  Measured on Apple M-series Metal: GEMM relErr 5.3e-13 vs f64; CPU↔GPU PCA equivalence
+  ~1e-10 abs on components/transforms; plain-f32 GEMM would sit at ~1e-5.
+- **Playwright headless WebGPU needs the full Chromium build** (`channel: 'chromium'` +
+  `--enable-unsafe-webgpu`); the default headless shell has no WebGPU adapter.

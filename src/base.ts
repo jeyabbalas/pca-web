@@ -112,14 +112,28 @@ export abstract class BasePCA {
 
   protected transformCore(X: Matrix, xIsCentered: boolean): Matrix {
     const comp = this.components_ as Matrix;
-    const ev = this.explainedVariance_ as FloatArray;
-    const meanArr = this.mean_ as FloatArray;
-    const n = X.rows;
-    const p = X.cols;
-    const k = comp.rows;
     // Project first, then remove the projected mean — sklearn's operation
     // order (avoids centering a copy of X).
-    const xt = matmulTransB(X.data, comp.data, n, p, k);
+    const xt = matmulTransB(X.data, comp.data, X.rows, X.cols, comp.rows);
+    return this._transformFromProjection(xt, X.rows, X.dtype, xIsCentered);
+  }
+
+  /**
+   * @internal Everything in transform downstream of the X·componentsᵀ
+   * product (mean-projection removal, whitening, dtype cast). The WebGPU
+   * frontend calls this with a device-computed projection; `xt` is consumed.
+   */
+  _transformFromProjection(
+    xt: Float64Array,
+    n: number,
+    xDtype: Dtype,
+    xIsCentered: boolean,
+  ): Matrix {
+    const comp = this.components_ as Matrix;
+    const ev = this.explainedVariance_ as FloatArray;
+    const meanArr = this.mean_ as FloatArray;
+    const p = comp.cols;
+    const k = comp.rows;
     if (!xIsCentered) {
       const meanProj = new Float64Array(k);
       for (let c = 0; c < k; c++) {
@@ -150,7 +164,7 @@ export abstract class BasePCA {
         }
       }
     }
-    return new Matrix(castTo(xt, promoteDtype(X.dtype, this.dtype)), n, k);
+    return new Matrix(castTo(xt, promoteDtype(xDtype, this.dtype)), n, k);
   }
 
   /** Map component-space data back to feature space — sklearn's `inverse_transform`. */

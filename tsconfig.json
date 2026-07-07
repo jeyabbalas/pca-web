@@ -18,7 +18,7 @@
     "sourceMap": true,
     "outDir": "dist",
     "rootDir": "src",
-    "types": []
+    "types": ["@webgpu/types"]
   },
   "include": ["src"]
 }
