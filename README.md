@@ -51,10 +51,13 @@ const X = new Matrix(new Float64Array(n * p), n, p); // zero-copy
 const X32 = new Matrix(new Float32Array(n * p), n, p);
 ```
 
-The compute dtype follows the input, exactly like sklearn: `Float32Array` in → float32
-attributes and transforms out (with float64 internal accumulation, matching numpy);
-`Float64Array` or `number[][]` in → float64 out. Transform results are `Matrix` (use
-`.toArray()` for `number[][]`, or `.data`/`.rows`/`.cols` directly).
+The result dtype follows the input, like sklearn: `Float32Array` in → float32 attributes and
+transforms out; `Float64Array` or `number[][]` in → float64 out. One deliberate divergence:
+float32 inputs are *computed* in float64 internally and rounded to float32 on output, whereas
+sklearn runs a native-f32 LAPACK pipeline — this port is therefore slightly **more** accurate
+for f32 data, and agrees with sklearn within the documented f32 tolerance class (~2e-3)
+rather than bit-for-bit. Transform results are `Matrix` (use `.toArray()` for `number[][]`,
+or `.data`/`.rows`/`.cols` directly).
 
 Like sklearn, `copy: false` lets `fit` overwrite the training data: the `full` solver centers
 it in place, and the truncated solvers (`arpack`, `randomized`) center **and square** it in

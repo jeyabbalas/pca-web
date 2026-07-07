@@ -49,6 +49,14 @@ declare global {
 // ---------------------------------------------------------------------------
 
 function maxDiff(actual: ArrayLike<number>, expected: ArrayLike<number>, tol: Tol) {
+  if (actual.length !== expected.length) {
+    return {
+      maxAbs: Number.POSITIVE_INFINITY,
+      maxRel: Number.POSITIVE_INFINITY,
+      ok: false,
+      worstRatio: Number.POSITIVE_INFINITY,
+    };
+  }
   let maxAbs = 0;
   let maxRel = 0;
   let worstRatio = 0;

@@ -201,7 +201,11 @@ export abstract class BasePCA {
         out[off + j] += meanArr[j];
       }
     }
-    return new Matrix(castTo(out, promoteDtype(xm.dtype, this.dtype)), n, p);
+    // numpy promotion: `X @ components + mean_` picks up mean_'s dtype, so a
+    // float32-fitted IncrementalPCA (whose mean_ is always float64) returns
+    // float64 here — unlike transform, whose in-place subtraction stays f32.
+    const outDtype = promoteDtype(promoteDtype(xm.dtype, this.dtype), dtypeOf(meanArr));
+    return new Matrix(castTo(out, outDtype), n, p);
   }
 
   // ------------------------------------------------------------------
