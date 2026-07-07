@@ -145,6 +145,12 @@ pca.dispose();             // release GPU resources
   to `new PCA(...)` by construction (verified in the Node test suite).
 - **Device injection:** pass your own `device: GPUDevice` (it is never destroyed by
   `dispose()`); `powerPreference` is forwarded to `requestAdapter`.
+- **TypeScript:** the `pca-web/webgpu` declarations use the standard WebGPU globals
+  (`GPUDevice`, …). With `lib: ["dom"]` (TypeScript ≥ 5.9 ships WebGPU in the DOM lib) they
+  resolve with no extra packages. Node-only lib targets instead add the types-only package
+  `@webgpu/types` (declared here as an optional peer dependency) with
+  `"types": ["@webgpu/types"]` and `skipLibCheck` in tsconfig. The runtime has zero
+  dependencies either way, and the core `pca-web` entry needs nothing.
 - **Precision:** WGSL has no f64, and (measured on Chrome/Metal) the shader compiler's
   fast-math destroys classic compensated-arithmetic tricks. The GEMM kernels therefore use
   fma-exact products of double-single operands with **exact integer-binned accumulation**
@@ -216,10 +222,11 @@ npm run bench          # CPU timings (Node)
 npm run bench:browser  # CPU vs GPU timings (browser)
 ```
 
-Regenerating fixtures requires Python with scikit-learn 1.9.0:
+Regenerating fixtures requires Python with the pinned reference stack (scikit-learn 1.9.0,
+numpy 2.5.1, scipy 1.18.0 — `python/requirements.txt`):
 
 ```sh
-python -m venv .venv && .venv/bin/pip install scikit-learn==1.9.0 numpy scipy
+python -m venv .venv && .venv/bin/pip install -r python/requirements.txt
 npm run fixtures       # rewrites fixtures/ deterministically
 ```
 

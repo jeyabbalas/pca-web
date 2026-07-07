@@ -29,7 +29,7 @@ Decisions locked with the user (2026-07-07):
 - [x] 9. Benchmarks CPU vs GPU: 2.7×–7.7× at 50k×200…5k×2000.
 - [x] 10. README (API mapping, solver guide, measured tolerances, fixture
       regen) + packaging verified via npm pack + clean-room import smoke.
-- [ ] 11. Final verifier-subagent audit + status report.
+- [x] 11. Final verifier-subagent audit (2 independent fresh-context auditors) + status report.
 
 ## Layout
 
