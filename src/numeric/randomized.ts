@@ -1,0 +1,129 @@
+/**
+ * Port of sklearn's `_randomized_svd` (Halko et al.), matching the 1.9.0
+ * implementation step for step: same transpose heuristic, same Gaussian test
+ * matrix drawn from the numpy RandomState replica, same power-iteration
+ * normalizers ('auto' → LU when n_iter > 2, else none), same final economic
+ * QR and small SVD. With the same seed this reproduces sklearn's randomized
+ * PCA output to floating-point accuracy.
+ */
+import type { FloatArray } from '../types.js';
+import { matmul, matmulTransA, transpose } from './blas.js';
+import { luFactor, permutedL } from './lu.js';
+import { qrEconomic } from './qr.js';
+import type { RandomState } from './rng.js';
+import { svd, type SvdResult } from './svd.js';
+
+export interface RandomizedSvdOptions {
+  nOversamples: number;
+  nIter: number | 'auto';
+  powerIterationNormalizer: 'auto' | 'QR' | 'LU' | 'none';
+  rng: RandomState;
+  /** Round the Gaussian test matrix to float32, as sklearn does for float32 inputs. */
+  float32Stream: boolean;
+}
+
+/** Top-k randomized SVD of `a` (rows×cols). Returns U (rows×k), s (k), Vt (k×cols). */
+export function randomizedSvd(
+  a: FloatArray,
+  rows: number,
+  cols: number,
+  k: number,
+  opts: RandomizedSvdOptions,
+): SvdResult {
+  const nRandom = k + opts.nOversamples;
+  let nIter: number;
+  if (opts.nIter === 'auto') {
+    // "7 was found a good compromise for PCA" — sklearn #5299.
+    nIter = k < 0.1 * Math.min(rows, cols) ? 7 : 4;
+  } else {
+    nIter = opts.nIter;
+  }
+  const transposed = rows < cols;
+  const effRows = transposed ? cols : rows;
+  const effCols = transposed ? rows : cols;
+
+  // Aeff @ B and Aeffᵀ @ B without materializing the transpose.
+  const mulAeff = (b: Float64Array, w: number): Float64Array =>
+    transposed ? matmulTransA(a, b, rows, cols, w) : matmul(a, b, rows, cols, w);
+  const mulAeffT = (b: Float64Array, w: number): Float64Array =>
+    transposed ? matmul(a, b, rows, cols, w) : matmulTransA(a, b, rows, cols, w);
+
+  // Gaussian test matrix, shape (effCols, nRandom), C-order draw.
+  let q: Float64Array = new Float64Array(effCols * nRandom);
+  opts.rng.standardNormal(q);
+  if (opts.float32Stream) {
+    for (let i = 0; i < q.length; i++) {
+      q[i] = Math.fround(q[i]);
+    }
+  }
+  let qWidth = nRandom;
+
+  let normalizer = opts.powerIterationNormalizer;
+  if (normalizer === 'auto') {
+    normalizer = nIter <= 2 ? 'none' : 'LU';
+  }
+
+  const applyNormalizer = (m_: Float64Array, mRows: number, mCols: number): Float64Array => {
+    if (normalizer === 'LU') {
+      const f = luFactor(m_, mRows, mCols);
+      return permutedL(f, mRows, mCols);
+    }
+    if (normalizer === 'QR') {
+      return qrEconomic(m_, mRows, mCols).q;
+    }
+    return m_;
+  };
+
+  // Power iterations imprint the top singular vectors of Aeff onto Q.
+  for (let it = 0; it < nIter; it++) {
+    let t: Float64Array = mulAeff(q, qWidth); // effRows × qWidth
+    t = applyNormalizer(t, effRows, qWidth);
+    let tWidth = normalizer === 'none' ? qWidth : Math.min(effRows, qWidth);
+    q = mulAeffT(t, tWidth); // effCols × tWidth
+    q = applyNormalizer(q, effCols, tWidth);
+    qWidth = normalizer === 'none' ? tWidth : Math.min(effCols, tWidth);
+  }
+
+  // Orthonormal basis of the sampled range.
+  const proj = mulAeff(q, qWidth); // effRows × qWidth
+  const qFinal = qrEconomic(proj, effRows, qWidth).q;
+  const qCols = Math.min(effRows, qWidth);
+
+  // B = Qᵀ Aeff (qCols × effCols), then SVD of the small B.
+  let b: Float64Array;
+  if (transposed) {
+    // B = Qᵀ Aᵀ = (A Q)ᵀ.
+    const aq = matmul(a, qFinal, rows, cols, qCols);
+    b = transpose(aq, rows, qCols);
+  } else {
+    b = matmulTransA(qFinal, a, effRows, qCols, effCols);
+  }
+  const { u: uhat, s, vt } = svd(b, qCols, effCols);
+  const nu = Math.min(qCols, effCols);
+  const uFull = matmul(qFinal, uhat, effRows, qCols, nu); // effRows × nu
+
+  // Truncate to k and undo the transpose, exactly like sklearn.
+  if (!transposed) {
+    const u = new Float64Array(rows * k);
+    for (let i = 0; i < rows; i++) {
+      for (let c = 0; c < k; c++) {
+        u[i * k + c] = uFull[i * nu + c];
+      }
+    }
+    return { u, s: s.slice(0, k), vt: vt.slice(0, k * effCols) };
+  }
+  // A = (Aeff)ᵀ = V Σ Uᵀ: U_A = Vt[:k].T (rows×k), Vt_A = (U[:, :k])ᵀ (k×cols).
+  const uA = new Float64Array(rows * k);
+  for (let i = 0; i < rows; i++) {
+    for (let c = 0; c < k; c++) {
+      uA[i * k + c] = vt[c * effCols + i];
+    }
+  }
+  const vtA = new Float64Array(k * cols);
+  for (let c = 0; c < k; c++) {
+    for (let i = 0; i < cols; i++) {
+      vtA[c * cols + i] = uFull[i * nu + c];
+    }
+  }
+  return { u: uA, s: s.slice(0, k), vt: vtA };
+}
