@@ -1,0 +1,62 @@
+{
+  "name": "pca-web",
+  "version": "0.1.0",
+  "description": "Client-side PCA and IncrementalPCA for the browser and Node.js — a zero-dependency TypeScript reimplementation of scikit-learn's decomposition.PCA with optional WebGPU acceleration.",
+  "type": "module",
+  "license": "MIT",
+  "author": "Jeya Balaji Balasubramanian",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/jeyabbalas/pca-web.git"
+  },
+  "keywords": [
+    "pca",
+    "principal-component-analysis",
+    "dimensionality-reduction",
+    "scikit-learn",
+    "machine-learning",
+    "webgpu",
+    "svd",
+    "incremental-pca",
+    "browser"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./webgpu": {
+      "types": "./dist/webgpu/index.d.ts",
+      "default": "./dist/webgpu/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "format": "biome format --write .",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:browser": "node tests/browser/run.mjs",
+    "bench": "node bench/cpu.mjs",
+    "bench:browser": "node bench/browser.mjs",
+    "fixtures": ".venv/bin/python python/generate_fixtures.py"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.5.2",
+    "@webgpu/types": "^0.1.71",
+    "esbuild": "^0.28.1",
+    "playwright": "^1.61.1",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.10"
+  }
+}
