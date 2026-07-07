@@ -52,6 +52,70 @@ export function totalVariance(xc: FloatArray, m: number, n: number): number {
   return s / (m - 1);
 }
 
+export interface IncrementalStats {
+  mean: Float64Array;
+  variance: Float64Array;
+  count: number;
+}
+
+/**
+ * sklearn's `_incremental_mean_and_var` (Chan/Golub/LeVeque update) for the
+ * uniform-count case IncrementalPCA uses. Float64 accumulators throughout,
+ * matching sklearn's `_safe_accumulator_op` upcasting for float32 input.
+ */
+export function incrementalMeanAndVar(
+  x: FloatArray,
+  m: number,
+  n: number,
+  lastMean: Float64Array | null,
+  lastVariance: Float64Array | null,
+  lastCount: number,
+): IncrementalStats {
+  const newSum = colSums(x, m, n);
+  const updatedCount = lastCount + m;
+  const mean = new Float64Array(n);
+  const lastSum = new Float64Array(n);
+  if (lastMean !== null && lastCount > 0) {
+    for (let j = 0; j < n; j++) {
+      lastSum[j] = lastMean[j] * lastCount;
+    }
+  }
+  for (let j = 0; j < n; j++) {
+    mean[j] = (lastSum[j] + newSum[j]) / updatedCount;
+  }
+
+  // Corrected two-pass variance of this batch.
+  const t = new Float64Array(n);
+  for (let j = 0; j < n; j++) {
+    t[j] = newSum[j] / m;
+  }
+  const correction = new Float64Array(n);
+  const newUnnormVar = new Float64Array(n);
+  for (let i = 0; i < m; i++) {
+    const off = i * n;
+    for (let j = 0; j < n; j++) {
+      const d = x[off + j] - t[j];
+      correction[j] += d;
+      newUnnormVar[j] += d * d;
+    }
+  }
+  const variance = new Float64Array(n);
+  if (lastCount === 0) {
+    for (let j = 0; j < n; j++) {
+      variance[j] = (newUnnormVar[j] - (correction[j] * correction[j]) / m) / updatedCount;
+    }
+  } else {
+    const lastOverNew = lastCount / m;
+    for (let j = 0; j < n; j++) {
+      const newU = newUnnormVar[j] - (correction[j] * correction[j]) / m;
+      const lastU = (lastVariance as Float64Array)[j] * lastCount;
+      const d = lastSum[j] / lastOverNew - newSum[j];
+      variance[j] = (lastU + newU + (lastOverNew / updatedCount) * d * d) / updatedCount;
+    }
+  }
+  return { mean, variance, count: updatedCount };
+}
+
 /** Cumulative sum (sequential, like xp.cumulative_sum). */
 export function cumsum(a: FloatArray): Float64Array {
   const out = new Float64Array(a.length);

@@ -177,6 +177,8 @@ def run_pca_case(w, case_id, X, X_test, params, flags=None):
         # sklearn's inverse_transform rejects 0-feature input.
         arrays["inverse_transform_test"] = w.array(est.inverse_transform(est.transform(X_test)))
     flags = dict(flags or {})
+    # Record the solver sklearn actually dispatched to (resolves 'auto').
+    flags["expected_solver"] = est._fit_svd_solver
     # n_features×n_features outputs get bulky and exercise no new code path
     # on large cases; capture them only for moderate feature counts.
     skip_covariance = X.shape[1] > 150
@@ -225,6 +227,7 @@ def pca_suite():
         "cov300x25": (lowrank(12, 300, 25, 10, noise=0.05), lowrank(112, 60, 25, 10, noise=0.05)),
         "big500x80": (lowrank(13, 500, 80, 30, decay=0.85, noise=0.1), lowrank(113, 100, 80, 30, noise=0.1)),
         "big80x500": (lowrank(14, 80, 500, 30, decay=0.85, noise=0.1), lowrank(114, 40, 500, 30, noise=0.1)),
+        "wide80x600": (lowrank(17, 80, 600, 25, decay=0.85, noise=0.1), lowrank(117, 30, 600, 25, noise=0.1)),
         "rand1500x300": (
             lowrank(15, 1500, 300, 40, decay=0.9, noise=0.05),
             lowrank(115, 100, 300, 40, noise=0.05),
@@ -374,37 +377,35 @@ def pca_suite():
                  flags={"rank_deficient": True})
 
     # --- auto solver selection (each branch) --------------------------------
+    # The dispatched solver is recorded from est._fit_svd_solver per case;
+    # the comments state which branch each case is meant to exercise.
     # covariance_eigh branch: n_features <= 1000 and n_samples >= 10*n_features
     run_pca_case(w, "auto_cov300x25_nc5", *datasets["cov300x25"],
-                 {"n_components": 5, "svd_solver": "auto", "random_state": 42},
-                 flags={"expected_solver": "covariance_eigh"})
+                 {"n_components": 5, "svd_solver": "auto", "random_state": 42})
     # small full branch: max(shape) <= 500
     run_pca_case(w, "auto_tall100x30_nc10", *datasets["tall100x30"],
-                 {"n_components": 10, "svd_solver": "auto", "random_state": 42},
-                 flags={"expected_solver": "full"})
-    # randomized branch: big and small k
+                 {"n_components": 10, "svd_solver": "auto", "random_state": 42})
+    # randomized branch, tall: big and small k
     run_pca_case(w, "auto_1500x300_nc20", *datasets["rand1500x300"],
-                 {"n_components": 20, "svd_solver": "auto", "random_state": 42},
-                 flags={"expected_solver": "randomized"})
+                 {"n_components": 20, "svd_solver": "auto", "random_state": 42})
+    # boundary: max(shape) == 500 exactly -> still the small-full branch
     run_pca_case(w, "auto_big80x500_nc10", *datasets["big80x500"],
-                 {"n_components": 10, "svd_solver": "auto", "random_state": 42},
-                 flags={"expected_solver": "randomized"})
+                 {"n_components": 10, "svd_solver": "auto", "random_state": 42})
+    # randomized branch, wide: max(shape) > 500 forces past the full branch
+    run_pca_case(w, "auto_wide80x600_nc10", *datasets["wide80x600"],
+                 {"n_components": 10, "svd_solver": "auto", "random_state": 42})
     # full fallback: big but k >= 0.8*min(shape)
     run_pca_case(w, "auto_big80x500_nc70", *datasets["big80x500"],
-                 {"n_components": 70, "svd_solver": "auto", "random_state": 42},
-                 flags={"expected_solver": "full"})
+                 {"n_components": 70, "svd_solver": "auto", "random_state": 42})
     # float n_components with big data -> full fallback
     run_pca_case(w, "auto_big80x500_frac0.9", *datasets["big80x500"],
-                 {"n_components": 0.9, "svd_solver": "auto", "random_state": 42},
-                 flags={"expected_solver": "full"})
+                 {"n_components": 0.9, "svd_solver": "auto", "random_state": 42})
     # mle -> full
     run_pca_case(w, "auto_mle200x30", *datasets["mle200x30"],
-                 {"n_components": "mle", "svd_solver": "auto"},
-                 flags={"expected_solver": "full"})
+                 {"n_components": "mle", "svd_solver": "auto"})
     # None with auto on small data
     run_pca_case(w, "auto_tall20x5_ncNone", *datasets["tall20x5"],
-                 {"n_components": None, "svd_solver": "auto"},
-                 flags={"expected_solver": "full"})
+                 {"n_components": None, "svd_solver": "auto"})
 
     # --- float32 -------------------------------------------------------------
     for base_id, params in [

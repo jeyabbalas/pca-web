@@ -116,9 +116,15 @@ export function luSolveInPlace(f: LuFactor, n: number, b: Float64Array): void {
   }
 }
 
-/** Matrix inverse of a square `a` (n×n) via LU. */
+/** Matrix inverse of a square `a` (n×n) via LU. Throws on an exactly singular
+ * matrix, like scipy.linalg.inv. */
 export function inverse(a: Float64Array, n: number): Float64Array {
   const f = luFactor(a, n, n);
+  for (let j = 0; j < n; j++) {
+    if (f.lu[j * n + j] === 0) {
+      throw new Error('singular matrix: inverse cannot be computed');
+    }
+  }
   const inv = new Float64Array(n * n);
   const col = new Float64Array(n);
   for (let j = 0; j < n; j++) {
