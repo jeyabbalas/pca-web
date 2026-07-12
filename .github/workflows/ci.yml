@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node: [20, 22]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run typecheck
+      # Build before test: the worker-parity suite includes a dist
+      # import-graph check that is skipped when dist/ is absent.
+      - run: npm run build
+      - run: npm test
+      - run: npm run demo:build
+
+  # Real-browser suites (Playwright Chromium; GPU cases run on SwiftShader).
+  # Advisory: headless-GPU availability varies across runner images.
+  browser:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install chromium --with-deps
+      - run: npm run test:browser:worker
+      - run: npm run test:browser

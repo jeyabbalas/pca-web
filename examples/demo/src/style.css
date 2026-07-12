@@ -1,0 +1,356 @@
+:root {
+  --bg: #f4f5f7;
+  --card: #ffffff;
+  --ink: #1f2733;
+  --dim: #667085;
+  --accent: #4e79a7;
+  --accent-2: #f28e2b;
+  --err: #c0392b;
+  --ok: #2e7d32;
+  --border: #e3e6ea;
+  font-size: 15px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family:
+    ui-sans-serif,
+    system-ui,
+    -apple-system,
+    'Segoe UI',
+    Roboto,
+    sans-serif;
+}
+
+header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+  padding: 1rem 1.5rem;
+  background: var(--card);
+  border-bottom: 1px solid var(--border);
+}
+
+header h1 {
+  margin: 0;
+  font-size: 1.3rem;
+}
+
+.header-title p {
+  margin: 0.2rem 0 0;
+  color: var(--dim);
+  font-size: 0.85rem;
+  max-width: 60rem;
+}
+
+.liveness {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex: none;
+}
+
+.liveness-text {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.1;
+}
+
+.liveness-text small {
+  color: var(--dim);
+}
+
+#fps {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+.spinner {
+  width: 22px;
+  height: 22px;
+  border-radius: 5px;
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  /* Rotated from requestAnimationFrame in ui.ts, NOT by a CSS animation:
+     a compositor-driven animation would keep spinning even while the main
+     thread is blocked, hiding exactly what this widget is meant to show. */
+}
+
+main {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+  gap: 1rem;
+  padding: 1rem 1.5rem 3rem;
+  max-width: 1400px;
+  margin: 0 auto;
+}
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 1rem 1.2rem;
+  min-width: 0;
+}
+
+.card.wide {
+  grid-column: 1 / -1;
+}
+
+.card h2 {
+  margin: 0 0 0.8rem;
+  font-size: 1.02rem;
+}
+
+.card h3 {
+  margin: 1rem 0 0.4rem;
+  font-size: 0.92rem;
+}
+
+fieldset.borderless {
+  border: none;
+  margin: 0;
+  padding: 0;
+}
+
+fieldset.borderless:disabled {
+  opacity: 0.55;
+}
+
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem 1rem;
+  margin: 0.35rem 0;
+}
+
+.stack {
+  margin: 0.35rem 0;
+}
+
+.grid2 {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 0.5rem 1rem;
+  margin: 0.5rem 0;
+}
+
+.grid2 label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  font-size: 0.85rem;
+  color: var(--dim);
+}
+
+.grid2 label.check-label {
+  flex-direction: row;
+  align-items: center;
+  align-self: end;
+  color: var(--ink);
+}
+
+.slider-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin: 0.3rem 0;
+}
+
+.slider-row span:first-child {
+  min-width: 7.5em;
+  color: var(--dim);
+  font-size: 0.85rem;
+}
+
+.slider-row input[type='range'] {
+  flex: 1;
+  min-width: 80px;
+}
+
+.slider-row output {
+  min-width: 3.5em;
+  font-variant-numeric: tabular-nums;
+}
+
+.dim {
+  color: var(--dim);
+  font-size: 0.85rem;
+}
+
+input[type='text'],
+input[type='number'],
+select {
+  padding: 0.3rem 0.45rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font: inherit;
+  background: #fff;
+  color: var(--ink);
+}
+
+button,
+.file-btn {
+  padding: 0.45rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: #fff;
+  color: var(--ink);
+  font: inherit;
+  cursor: pointer;
+}
+
+button:hover:not(:disabled),
+.file-btn:hover {
+  border-color: var(--accent);
+}
+
+button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+#btn-run {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+  font-weight: 600;
+}
+
+#btn-abort:not(:disabled) {
+  border-color: var(--err);
+  color: var(--err);
+}
+
+.file-btn {
+  display: inline-block;
+}
+
+.progress {
+  height: 10px;
+  border-radius: 5px;
+  background: var(--border);
+  overflow: hidden;
+  margin-top: 0.6rem;
+}
+
+#progress-fill {
+  height: 100%;
+  width: 0;
+  background: var(--accent);
+  transition: width 80ms linear;
+}
+
+#progress-fill.indeterminate {
+  width: 100%;
+  background: repeating-linear-gradient(
+    45deg,
+    var(--accent),
+    var(--accent) 12px,
+    #86a8c8 12px,
+    #86a8c8 24px
+  );
+  background-size: 34px 100%;
+  animation: slide 0.8s linear infinite;
+}
+
+@keyframes slide {
+  to {
+    background-position: 34px 0;
+  }
+}
+
+.status {
+  margin: 0.35rem 0;
+  font-size: 0.85rem;
+  color: var(--dim);
+  min-height: 1.1em;
+  overflow-wrap: anywhere;
+}
+
+.status.err {
+  color: var(--err);
+}
+
+.status.ok {
+  color: var(--ok);
+}
+
+.chart {
+  width: 100%;
+  height: 300px;
+}
+
+.chart.tall {
+  height: 420px;
+}
+
+.chart.short {
+  height: 220px;
+}
+
+.results-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 0.5rem 1.5rem;
+}
+
+.tiles {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin: 0.4rem 0;
+}
+
+.tiles figure {
+  margin: 0;
+  text-align: center;
+}
+
+.tiles canvas {
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  image-rendering: pixelated;
+}
+
+.tiles figcaption {
+  font-size: 0.7rem;
+  color: var(--dim);
+}
+
+table.history {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.82rem;
+  margin-top: 0.4rem;
+}
+
+table.history th,
+table.history td {
+  text-align: left;
+  padding: 0.25rem 0.6rem 0.25rem 0;
+  border-bottom: 1px solid var(--border);
+  color: var(--dim);
+}
+
+table.history th {
+  color: var(--ink);
+}
+
+details summary {
+  cursor: pointer;
+  color: var(--dim);
+  font-size: 0.85rem;
+  margin-top: 0.6rem;
+}

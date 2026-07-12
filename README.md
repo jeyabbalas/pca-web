@@ -15,6 +15,10 @@ TypeScript reimplementation of scikit-learn 1.9's `sklearn.decomposition.PCA` an
 - Even the random number generator is a bit-exact numpy `RandomState` (MT19937) replica: with
   the same seed, `svdSolver: 'randomized'` reproduces sklearn's output to floating-point
   accuracy — not just statistically.
+- Fits can run [off the main thread](#web-workers) (`pca-web/client` + `pca-web/worker`), report
+  [live progress with intermediate models](#progress-non-blocking-fits-and-cancellation), be
+  aborted mid-fit, and be [serialized](#model-serialization) for IndexedDB/`postMessage`/JSON —
+  see the [live demo](https://jeyabbalas.github.io/pca-web/) (source in `examples/demo/`).
 
 ```ts
 import { PCA } from 'pca-web';
@@ -74,6 +78,8 @@ Names are idiomatic TypeScript camelCase; each maps 1:1 to its sklearn counterpa
 | `getCovariance()` / `getPrecision()` | `get_covariance()` / `get_precision()` |
 | `scoreSamples(X)` / `score(X)` | `score_samples` / `score` |
 | `getFeatureNamesOut()` | `get_feature_names_out()` |
+| `fitAsync(X, opts?)` / `fitTransformAsync(X, opts?)` | — (non-blocking fit, [see below](#progress-non-blocking-fits-and-cancellation)) |
+| `toModel()` / `PCA.fromModel(m)` / `modelToJSON` / `modelFromJSON` | — (serialization, [see below](#model-serialization)) |
 | `components` | `components_` |
 | `explainedVariance` / `explainedVarianceRatio` | `explained_variance_` / `explained_variance_ratio_` |
 | `singularValues` / `mean` / `noiseVariance` | `singular_values_` / `mean_` / `noise_variance_` |
@@ -177,6 +183,147 @@ upload + readback):
 | rand_5000x2000_nc32 | 5000×2000 | randomized | 4843 | 631 | 7.7× |
 | cov_f32_50000x200 (f32) | 50000×200 | covariance_eigh | 1250 | 235 | 5.3× |
 
+## Progress, non-blocking fits and cancellation
+
+Every estimator has four fit entry points with identical numerics — `fit` and `fitTransform`
+run the solver to completion synchronously; `fitAsync` and `fitTransformAsync` run the **same
+solver steps** time-sliced through the event loop (default budget 12 ms per slice), so the UI
+keeps painting. Observer-on vs observer-off, sync vs async: the fitted models are
+**bit-identical** (enforced by tests, including that snapshots draw nothing from the RNG
+stream).
+
+```ts
+const pca = new PCA({ nComponents: 16, svdSolver: 'randomized', randomState: 42 });
+const controller = new AbortController();
+
+await pca.fitAsync(X, {
+  budgetMs: 12,                      // solver time per event-loop slice
+  signal: controller.signal,         // abort mid-fit → rejects with name === 'AbortError'
+  snapshot: { scores: true, every: 1 },
+  onProgress(e) {
+    render(e.fraction);              // [0,1] monotone, or null while indeterminate
+    if (e.snapshot) plot(e.snapshot.scores);   // evolving embedding of the training rows
+  },
+});
+```
+
+`onProgress` fires synchronously from inside the fit with `{estimator, solver, phase, step,
+totalSteps, fraction, snapshot?, detail?}`. Cadence and snapshot availability per solver:
+
+| solver | phases | one event per… | `fraction` | intermediate snapshots |
+| --- | --- | --- | --- | --- |
+| `full` | `decompose` → `finalize` | decomposition (indeterminate) | null → 1 | finalize only |
+| `covariance_eigh` | `gram` → `decompose` → `finalize` | Gram chunk (~2²² elements) | 0–0.85 → pinned → 1 | finalize only |
+| `randomized` | `power-iteration` → `finalize` | power iteration | 0–0.9 → 1 | every iteration (opt-in) |
+| `arpack` | `lanczos-step` → `finalize` | convergence check; `detail: {basisSize, jmax, maxResidual}` | null → 1 | at checkpoints |
+| IncrementalPCA | `batch` → `finalize` | `partial_fit` batch | linear → 1 | every batch |
+
+Snapshots are opt-in (`snapshot: { components: true }` or `{ scores: true }`): fresh float64
+copies in sklearn's sign convention, safe to keep or transfer. On the randomized solver a
+snapshot costs roughly one extra solver step per iteration — `every: 2` halves that.
+
+Semantics: an `onProgress` exception propagates and fails the fit. An aborted or failed `PCA`
+fit leaves the estimator **unfitted** (an abort before the first step leaves a previous model
+intact); `IncrementalPCA` keeps the completed-batch model, matching `partial_fit` semantics.
+Abort accepts any `{aborted, reason?}` object — a real `AbortSignal` works, none is required.
+Concurrent fits on one instance throw. `WebGPUPCA.fit(X, options)` takes the same options;
+abort during a GPU fit releases device buffers and does **not** fall back to a CPU refit.
+
+## Web Workers
+
+`pca-web/client` exports `WorkerPCA` and `WorkerIncrementalPCA` — async proxies that run the
+estimator in a worker and stream progress back. The client bundle contains **no solver code**
+(enforced by an import-graph test): apps that fit only in the worker ship the numerics once,
+inside the worker bundle.
+
+```ts
+import { WorkerPCA } from 'pca-web/client';
+
+const pca = new WorkerPCA({
+  nComponents: 16,
+  svdSolver: 'randomized',
+  randomState: 42,            // numeric seeds only — a live RandomState can't cross threads
+  backend: 'webgpu',          // optional: WebGPU inside the worker, CPU fallback
+});
+await pca.fit(X, {
+  signal: controller.signal,  // aborts land mid-fit (the worker fit is time-sliced)
+  transfer: true,             // optional: move X's buffer instead of copying it
+  onProgress: (e) => render(e.fraction, e.snapshot),
+  progress: { minIntervalMs: 33, snapshot: { scores: true } },  // worker-side throttle
+});
+
+pca.components;               // sync — every fit piggybacks the model back to a client mirror
+pca.explainedVarianceRatio;   // sync
+await pca.transform(Xnew);    // compute methods stay in the worker
+const model = pca.exportModel();     // sync snapshot of the mirror (see Model serialization)
+await pca.dispose();          // frees the estimator; terminates the worker it owns
+```
+
+Progress events are throttled worker-side (`minIntervalMs`, default 33 ms, latest-wins within
+a phase; phase boundaries and `finalize` always delivered, `seq` monotone). `transfer: true`
+detaches the input's buffer from the caller; views are tight-sliced first so a subarray's
+parent buffer is never touched. With `backend: 'webgpu'`, `await pca.info()` reports which
+backend actually executed plus the adapter (`{backend, gpuAdapterInfo, webgpuAvailable}`).
+
+**Where the worker comes from.** By default `WorkerPCA` spawns the packaged entry via
+`new Worker(new URL('./worker.js', import.meta.url), { type: 'module' })` — webpack 5, Vite
+build, and native ESM all resolve that statically. If your toolchain can't, pass `{ worker }`:
+
+| toolchain | recipe |
+| --- | --- |
+| webpack 5, native ESM | default works — or `{ worker: new Worker(new URL('pca-web/worker', import.meta.url), { type: 'module' }) }` |
+| Vite | make a one-line entry `worker-entry.ts` containing `import 'pca-web/worker'`, pass `{ worker: () => new Worker(new URL('./worker-entry.ts', import.meta.url), { type: 'module' }) }`, and set `worker: { format: 'es' }` in `vite.config.ts` (what `examples/demo` does); or `import PcaWorker from 'pca-web/worker?worker'` → `{ worker: () => new PcaWorker() }`. In dev also add `'pca-web'` to `optimizeDeps.exclude`. |
+| esbuild | bundle `pca-web/worker` as its own entry point and pass its URL: `{ worker: () => new Worker('/assets/pca-worker.js', { type: 'module' }) }` |
+| Node ≥ 20 | `worker_threads` — bridge a `MessagePort` (below) |
+
+Node (`worker_threads` `Worker` is an EventEmitter, not an EventTarget, so hand the client a
+`MessagePort`, which is one):
+
+```ts
+// pca.worker.mjs — runs in the thread
+import { workerData } from 'node:worker_threads';
+import { attachPCAWorker } from 'pca-web/worker';
+attachPCAWorker(workerData.port);
+
+// main thread
+import { MessageChannel, Worker } from 'node:worker_threads';
+import { WorkerPCA } from 'pca-web/client';
+const { port1, port2 } = new MessageChannel();
+new Worker(new URL('./pca.worker.mjs', import.meta.url), {
+  workerData: { port: port2 },
+  transferList: [port2],
+});
+const pca = new WorkerPCA({ nComponents: 3, worker: port1 });
+```
+
+`attachPCAWorker(port)` (from `pca-web/worker`) attaches the request handler to any
+port-shaped endpoint; the packaged worker entry just calls it on the worker's global scope.
+Requests on one worker execute strictly in order; aborts are handled out-of-band. Errors are
+marshalled back `instanceof`-correct where it matters (`NotFittedError`, `AbortError`), and
+`terminate()` rejects in-flight calls with `WorkerTerminatedError`.
+
+## Model serialization
+
+`toModel()` captures the complete fitted state as a plain object of typed arrays — cheap,
+structured-clone-friendly (IndexedDB, `postMessage`, `structuredClone`), and validated on
+rehydration. `PCA.fromModel(model)` / `IncrementalPCA.fromModel(model)` restore an estimator
+whose every method output is **bit-identical** to the original's; a rehydrated
+`IncrementalPCA` continues `partialFit` streams exactly as if never interrupted.
+
+```ts
+// IndexedDB (structured clone — no JSON, typed arrays stored directly)
+store.put(pca.toModel(), 'my-model');
+const pca2 = PCA.fromModel(await get(store, 'my-model'));
+
+// JSON when you need text (bit-exact round-trip for f64 and f32)
+localStorage.setItem('m', modelToJSON(pca.toModel()));
+const pca3 = PCA.fromModel(modelFromJSON(localStorage.getItem('m')!) as PCAModel);
+```
+
+The worker proxies speak the same format: `exportModel()` (synchronous, from the client-side
+mirror) and `WorkerPCA.fromModel(model, options)`, which hydrates the worker without a refit.
+Models carry a `formatVersion`; `assertValidModel` rejects malformed or future-versioned input.
+
 ## Numerical parity and tolerances
 
 Parity is defined by tests, not intent. `python/generate_fixtures.py` runs real
@@ -214,15 +361,36 @@ Documented caveats, discovered and verified during porting:
 - **Score/log-likelihood** values are large negatives; they agree to ~1e-10 relative
   (deterministic f64).
 
+## Demo app
+
+`examples/demo/` is a Vite app exercising the whole feature surface — worker vs main-thread
+execution, live progress with snapshot embeddings, abort, WebGPU-in-worker with adapter
+readout, IncrementalPCA `partialFit` streaming, eigen-digit/reconstruction/outlier panels, and
+model persistence (JSON + IndexedDB restore-without-refit). It consumes the library strictly
+through its public package exports, doubling as a packaging test.
+
+```sh
+npm run demo:dev       # build the library, then vite dev
+npm run demo:build     # static build (examples/demo/dist)
+```
+
+The deploy workflow (`.github/workflows/deploy-pages.yml`) publishes it to GitHub Pages on
+every push to `main`; one-time repo setup: **Settings → Pages → Source: "GitHub Actions"**.
+The bundled digits dataset is regenerated by `npm run demo:data` (same venv as fixtures).
+
 ## Testing and development
 
 ```sh
-npm test               # Node suite: parity vs sklearn fixtures + API behavior (131 tests)
-npm run test:browser   # real-GPU harness (Playwright Chromium); reports exactly which
-                       # cases executed on which adapter, and fails if the GPU didn't run
+npm test                     # Node suite: parity vs sklearn fixtures + API behavior,
+                             # async/observer bit-equivalence, abort, model round-trips,
+                             # worker protocol/parity over MessageChannel (257 tests)
+npm run test:browser         # real-GPU harness (Playwright Chromium); reports exactly which
+                             # cases executed on which adapter, and fails if the GPU didn't run
+npm run test:browser:worker  # real Worker in Chromium: bit-equal results, progress on the
+                             # main thread, mid-fit abort, transfer semantics, WebGPU-in-worker
 npm run typecheck && npm run lint && npm run build
-npm run bench          # CPU timings (Node)
-npm run bench:browser  # CPU vs GPU timings (browser)
+npm run bench                # CPU timings (Node)
+npm run bench:browser        # CPU vs GPU timings (browser)
 ```
 
 Regenerating fixtures requires Python with the pinned reference stack (scikit-learn 1.9.0,

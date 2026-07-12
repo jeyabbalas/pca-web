@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>pca-web demo</title>
+    <link rel="stylesheet" href="./src/style.css" />
+  </head>
+  <body>
+    <header>
+      <div class="header-title">
+        <h1>pca-web</h1>
+        <p>
+          scikit-learn-parity PCA in TypeScript — Web Worker fits, live progress, abort, WebGPU,
+          IncrementalPCA streaming, model persistence.
+          <a href="https://github.com/jeyabbalas/pca-web" target="_blank" rel="noreferrer">GitHub</a>
+        </p>
+      </div>
+      <div class="liveness" title="Driven by requestAnimationFrame on the main thread — it freezes when the main thread is blocked">
+        <div id="spinner" class="spinner"></div>
+        <div class="liveness-text">
+          <span id="fps">— fps</span>
+          <small>main thread</small>
+        </div>
+      </div>
+    </header>
+
+    <main>
+      <section class="card" id="panel-data">
+        <h2>1 · Data</h2>
+        <fieldset id="data-controls" class="borderless">
+          <div class="row">
+            <label><input type="radio" name="dataset" value="digits" checked /> digits (1797×64)</label>
+            <label><input type="radio" name="dataset" value="synthetic" /> synthetic clusters</label>
+          </div>
+          <div id="synthetic-controls" class="stack" hidden>
+            <label class="slider-row">
+              <span>samples</span>
+              <input id="synth-n" type="range" min="500" max="50000" step="500" value="20000" />
+              <output id="synth-n-out">20000</output>
+            </label>
+            <label class="slider-row">
+              <span>features</span>
+              <input id="synth-p" type="range" min="2" max="300" step="1" value="50" />
+              <output id="synth-p-out">50</output>
+            </label>
+            <label class="slider-row">
+              <span>clusters</span>
+              <input id="synth-clusters" type="range" min="1" max="10" step="1" value="5" />
+              <output id="synth-clusters-out">5</output>
+            </label>
+          </div>
+          <div class="row">
+            <span class="dim">dtype</span>
+            <label><input type="radio" name="dtype" value="float64" checked /> float64</label>
+            <label><input type="radio" name="dtype" value="float32" /> float32</label>
+          </div>
+        </fieldset>
+        <p id="data-status" class="status"></p>
+      </section>
+
+      <section class="card" id="panel-config">
+        <h2>2 · Model &amp; execution</h2>
+        <fieldset id="config-controls" class="borderless">
+          <div class="row">
+            <span class="dim">estimator</span>
+            <label><input type="radio" name="estimator" value="pca" checked /> PCA</label>
+            <label><input type="radio" name="estimator" value="ipca" /> IncrementalPCA (partialFit stream)</label>
+          </div>
+          <div class="grid2">
+            <label>solver
+              <select id="cfg-solver">
+                <option value="auto">auto</option>
+                <option value="full">full</option>
+                <option value="covariance_eigh">covariance_eigh</option>
+                <option value="randomized" selected>randomized</option>
+                <option value="arpack">arpack</option>
+              </select>
+            </label>
+            <label>nComponents
+              <input id="cfg-ncomponents" type="text" value="16" title="integer, fraction in (0,1), 'mle', or empty for all" />
+            </label>
+            <label>iteratedPower
+              <input id="cfg-iterpower" type="text" value="14" title="'auto' or an integer (randomized solver)" />
+            </label>
+            <label>seed
+              <input id="cfg-seed" type="number" value="42" />
+            </label>
+            <label id="batchsize-label" hidden>batchSize
+              <input id="cfg-batchsize" type="number" value="200" min="1" />
+            </label>
+            <label class="check-label"><input id="cfg-whiten" type="checkbox" /> whiten</label>
+          </div>
+          <div class="row">
+            <span class="dim">run on</span>
+            <label><input type="radio" name="mode" value="worker" checked /> Web Worker</label>
+            <label><input type="radio" name="mode" value="async" /> main thread, fitAsync</label>
+            <label><input type="radio" name="mode" value="sync" /> main thread, blocking</label>
+          </div>
+          <div class="row">
+            <span class="dim">backend</span>
+            <label><input type="radio" name="backend" value="cpu" checked /> CPU</label>
+            <label><input type="radio" name="backend" value="webgpu" /> WebGPU (in the worker)</label>
+          </div>
+        </fieldset>
+      </section>
+
+      <section class="card wide" id="panel-run">
+        <h2>3 · Run</h2>
+        <div class="row">
+          <button id="btn-run" type="button">Fit</button>
+          <button id="btn-abort" type="button" disabled>Abort</button>
+          <span id="ipca-seen" class="dim" hidden></span>
+        </div>
+        <div class="progress"><div id="progress-fill"></div></div>
+        <p id="progress-label" class="status">idle</p>
+        <p id="backend-line" class="status"></p>
+        <p id="run-status" class="status"></p>
+        <div id="scatter" class="chart tall"></div>
+        <details>
+          <summary>run history</summary>
+          <table class="history">
+            <thead><tr><th>estimator</th><th>data</th><th>where</th><th>backend</th><th>wall time</th></tr></thead>
+            <tbody id="history-body"></tbody>
+          </table>
+        </details>
+      </section>
+
+      <section class="card wide" id="panel-results" hidden>
+        <h2>4 · Results</h2>
+        <div class="results-grid">
+          <div>
+            <h3>Scree — explained variance ratio</h3>
+            <div id="scree" class="chart"></div>
+          </div>
+          <div id="outlier-block">
+            <h3>Outliers — <code>scoreSamples</code> log-likelihood</h3>
+            <div id="hist" class="chart"></div>
+            <p id="outlier-note" class="status"></p>
+          </div>
+        </div>
+        <div id="eigen-block">
+          <h3>Eigen-digits — leading components as 8×8 images</h3>
+          <div id="eigen-tiles" class="tiles"></div>
+        </div>
+        <div id="recon-block">
+          <h3>Reconstruction explorer — <code>transform</code> → <code>inverseTransform</code></h3>
+          <label class="slider-row">
+            <span>components kept</span>
+            <input id="recon-k" type="range" min="1" max="16" value="8" />
+            <output id="recon-k-out">8</output>
+            <span id="recon-mse" class="dim"></span>
+          </label>
+          <div id="recon-orig" class="tiles"></div>
+          <div id="recon-tiles" class="tiles"></div>
+          <div id="mse-chart" class="chart short"></div>
+        </div>
+      </section>
+
+      <section class="card wide" id="panel-model">
+        <h2>5 · Model persistence</h2>
+        <div class="row">
+          <button id="btn-export" type="button">Export JSON</button>
+          <label class="file-btn">Import JSON<input id="file-import" type="file" accept=".json,application/json" hidden /></label>
+          <button id="btn-idb-save" type="button">Save to IndexedDB</button>
+          <button id="btn-idb-load" type="button">Load from IndexedDB</button>
+        </div>
+        <p id="model-status" class="status"></p>
+      </section>
+    </main>
+
+    <script type="module" src="./src/main.ts"></script>
+  </body>
+</html>

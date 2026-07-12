@@ -50,6 +50,9 @@
     "README.md",
     "LICENSE"
   ],
+  "workspaces": [
+    "examples/demo"
+  ],
   "scripts": {
     "prepack": "npm run build",
     "build": "tsc -p tsconfig.build.json",
@@ -62,7 +65,10 @@
     "test:browser:worker": "node tests/browser/run-worker.mjs",
     "bench": "node bench/cpu.mjs",
     "bench:browser": "node bench/browser.mjs",
-    "fixtures": ".venv/bin/python python/generate_fixtures.py"
+    "demo:dev": "npm run build && npm -w examples/demo run dev",
+    "demo:build": "npm run build && npm -w examples/demo run build",
+    "fixtures": ".venv/bin/python python/generate_fixtures.py",
+    "demo:data": ".venv/bin/python python/generate_demo_data.py"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.2",
