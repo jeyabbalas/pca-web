@@ -1,7 +1,7 @@
 {
   "name": "pca-web",
   "version": "0.1.0",
-  "description": "Client-side PCA and IncrementalPCA for the browser and Node.js \u2014 a zero-dependency TypeScript reimplementation of scikit-learn's decomposition.PCA with optional WebGPU acceleration.",
+  "description": "Client-side PCA and IncrementalPCA for the browser and Node.js — a zero-dependency TypeScript reimplementation of scikit-learn's decomposition.PCA with optional WebGPU acceleration.",
   "type": "module",
   "license": "MIT",
   "author": "Jeya Balaji Balasubramanian",
@@ -27,6 +27,8 @@
     "./dist/worker/worker.js",
     "./src/worker/worker.ts"
   ],
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -61,6 +63,7 @@
     "format": "biome format --write .",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
     "test:browser": "node tests/browser/run.mjs",
     "test:browser:worker": "node tests/browser/run-worker.mjs",
     "bench": "node bench/cpu.mjs",
@@ -73,6 +76,7 @@
   "devDependencies": {
     "@biomejs/biome": "^2.5.2",
     "@types/node": "^24.13.2",
+    "@vitest/coverage-v8": "^4.1.10",
     "@webgpu/types": "^0.1.71",
     "esbuild": "^0.28.1",
     "playwright": "^1.61.1",
