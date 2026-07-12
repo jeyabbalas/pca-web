@@ -41,17 +41,6 @@ export function centerInPlace(x: FloatArray, m: number, n: number, mean: Float64
   }
 }
 
-/** Sum of all squared entries divided by (m - 1) — total variance of centered X. */
-export function totalVariance(xc: FloatArray, m: number, n: number): number {
-  let s = 0;
-  const len = m * n;
-  for (let i = 0; i < len; i++) {
-    const v = xc[i];
-    s += v * v;
-  }
-  return s / (m - 1);
-}
-
 export interface IncrementalStats {
   mean: Float64Array;
   variance: Float64Array;

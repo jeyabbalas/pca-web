@@ -155,34 +155,6 @@ export function matvecTransA(a: FloatArray, x: FloatArray, m: number, n: number)
   return y;
 }
 
-export function dot(a: FloatArray, b: FloatArray, len: number): number {
-  let s = 0;
-  for (let i = 0; i < len; i++) {
-    s += a[i] * b[i];
-  }
-  return s;
-}
-
-export function nrm2(a: FloatArray, len: number): number {
-  // Two-pass scaled norm for overflow safety.
-  let amax = 0;
-  for (let i = 0; i < len; i++) {
-    const v = Math.abs(a[i]);
-    if (v > amax) {
-      amax = v;
-    }
-  }
-  if (amax === 0 || !Number.isFinite(amax)) {
-    return amax;
-  }
-  let s = 0;
-  for (let i = 0; i < len; i++) {
-    const v = a[i] / amax;
-    s += v * v;
-  }
-  return amax * Math.sqrt(s);
-}
-
 /** Out-of-place transpose: returns Bᵀ (n×m) for B (m×n). */
 export function transpose(a: FloatArray, m: number, n: number): Float64Array {
   const t = new Float64Array(m * n);

@@ -35,34 +35,3 @@ export function svdFlipVBased(
     }
   }
 }
-
-/** `svd_flip(u, v, u_based_decision=True)`: sign from the columns of U. */
-export function svdFlipUBased(
-  u: Float64Array,
-  uRows: number,
-  uCols: number,
-  vt: Float64Array | null,
-  vtCols: number,
-): void {
-  for (let c = 0; c < uCols; c++) {
-    let maxAbs = -1;
-    let maxIdx = 0;
-    for (let r = 0; r < uRows; r++) {
-      const a = Math.abs(u[r * uCols + c]);
-      if (a > maxAbs) {
-        maxAbs = a;
-        maxIdx = r;
-      }
-    }
-    const sign = Math.sign(u[maxIdx * uCols + c]);
-    for (let r = 0; r < uRows; r++) {
-      u[r * uCols + c] *= sign;
-    }
-    if (vt !== null) {
-      const off = c * vtCols;
-      for (let j = 0; j < vtCols; j++) {
-        vt[off + j] *= sign;
-      }
-    }
-  }
-}
