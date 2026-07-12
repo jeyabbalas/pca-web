@@ -9,6 +9,7 @@
  * Memory: O((m+n) · j) for a Krylov basis of size j (typically a small
  * multiple of k), never O(m·n) beyond the input itself.
  */
+import type { SolverHooks } from '../progress.js';
 import type { FloatArray } from '../types.js';
 import { matvec, matvecTransA } from './blas.js';
 import type { RandomState } from './rng.js';
@@ -70,7 +71,9 @@ function randomOrthogonal(
  * Top-k singular triplets of `a` (m×n) as a step generator: yields `void`
  * at the top of every Lanczos iteration — the suspension/abort checkpoints
  * used by the async drivers. Numerically identical to draining it in one go
- * (`lanczosSvd` below).
+ * (`lanczosSvd` below). `hooks` reports each residual checkpoint; snapshot
+ * Ritz triplets reuse the small SVD already computed for the residual test,
+ * and no RNG is drawn for reporting, so the stream is unchanged.
  */
 export function* lanczosSvdSteps(
   a: FloatArray,
@@ -79,6 +82,7 @@ export function* lanczosSvdSteps(
   k: number,
   v0: Float64Array,
   rng: RandomState,
+  hooks?: SolverHooks | null,
 ): Generator<void, SvdResult, void> {
   // Run the recurrence with the v-side on the smaller dimension, mirroring
   // scipy operating on the smaller Gram operator.
@@ -108,6 +112,7 @@ export function* lanczosSvdSteps(
 
   let anormEst = 0;
   let result: SvdResult | null = null;
+  let checkCount = 0;
 
   for (let j = 0; j < jmax; j++) {
     yield;
@@ -153,10 +158,34 @@ export function* lanczosSvdSteps(
     const basisSize = j + 1;
     const canStop = basisSize >= k;
     const shouldCheck = canStop && (basisSize === jmax || (basisSize - k) % 3 === 0);
-    if (shouldCheck) {
-      const check = tryFinish(U, V, alphas, betas, beta, k, rows, cols, basisSize === jmax);
-      if (check !== null) {
-        result = check;
+    if (shouldCheck && alphas.length >= k) {
+      // Inlined tryFinish so the residual test's small SVD can also feed the
+      // progress event (and, when wanted, a Ritz-triplet snapshot) at no
+      // extra decomposition cost. Decisions are identical to tryFinish.
+      const decB = smallSvdOfB(alphas, betas);
+      const force = basisSize === jmax;
+      const smax = decB.s[0] > 0 ? decB.s[0] : 1;
+      const residual = maxTopKResidual(decB, beta, k);
+      const converged = residual <= 1e-13 * smax;
+      if (hooks) {
+        checkCount++;
+        // The terminal checkpoint's triplets feed the model itself; only
+        // non-terminal checkpoints assemble a separate snapshot copy.
+        let snapDec: SvdResult | null = null;
+        if (!(converged || force) && hooks.wantSnapshot(checkCount)) {
+          const ritz = assembleTriplets(decB, U, V, k, rows, cols);
+          snapDec = wide ? untransposeResult(ritz, m, n, k) : ritz;
+        }
+        hooks.emit({
+          phase: 'lanczos-step',
+          step: checkCount,
+          totalSteps: null,
+          dec: snapDec,
+          detail: { basisSize, jmax, maxResidual: residual },
+        });
+      }
+      if (converged || force) {
+        result = assembleTriplets(decB, U, V, k, rows, cols);
         break;
       }
     }

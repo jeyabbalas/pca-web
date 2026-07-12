@@ -12,5 +12,16 @@ export type { MatrixInput } from './matrix.js';
 export { asMatrix, Matrix } from './matrix.js';
 export type { PCAOptions, PowerIterationNormalizer, SvdSolver } from './pca.js';
 export { PCA, RandomState } from './pca.js';
+export type {
+  FitAsyncOptions,
+  FitObserver,
+  FitPhase,
+  FitSolverId,
+  PCAFitProgress,
+  PCAFitSnapshot,
+  SnapshotOptions,
+} from './progress.js';
+export type { AbortSignalLike } from './scheduling.js';
+export { FitAbortError } from './scheduling.js';
 export type { Dtype, FloatArray } from './types.js';
 export { NotFittedError } from './validation.js';

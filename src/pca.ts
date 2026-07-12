@@ -19,8 +19,16 @@ import { checkRandomState, RandomState } from './numeric/rng.js';
 import { centerInPlace, colMeans, cumsum, searchsortedRight } from './numeric/stats.js';
 import { type SvdResult, svd } from './numeric/svd.js';
 import { svdFlipVBased } from './numeric/svdflip.js';
+import {
+  type FitObserver,
+  makeReporter,
+  type PCAFitSnapshot,
+  type ProgressReporter,
+  projectForSnapshot,
+  toFloat64Copy,
+} from './progress.js';
 import { driveSync } from './scheduling.js';
-import type { FloatArray } from './types.js';
+import { dtypeOf, epsFor, type FloatArray } from './types.js';
 import { assertAllFinite, checkFeatureCount } from './validation.js';
 
 export type SvdSolver = 'auto' | 'full' | 'covariance_eigh' | 'arpack' | 'randomized';
@@ -222,15 +230,15 @@ export class PCA extends BasePCA {
   // Fitting
   // ------------------------------------------------------------------
 
-  fit(X: MatrixInput): this {
-    driveSync(this._fitSteps(asMatrix(X)));
+  fit(X: MatrixInput, observer?: FitObserver): this {
+    driveSync(this._fitSteps(asMatrix(X), observer), observer?.signal);
     return this;
   }
 
   /** Fit and return the embedding of X — sklearn's `fit_transform` fast path. */
-  fitTransform(X: MatrixInput): Matrix {
+  fitTransform(X: MatrixInput, observer?: FitObserver): Matrix {
     const xm = asMatrix(X);
-    const r = driveSync(this._fitSteps(xm));
+    const r = driveSync(this._fitSteps(xm, observer), observer?.signal);
     return this.fitTransformFromResult(r);
   }
 
@@ -264,22 +272,27 @@ export class PCA extends BasePCA {
   /**
    * @internal The fit as a step generator — every `yield` is a suspension
    * and abort checkpoint for the drivers (sync drain, time-sliced async,
-   * worker). Runs the exact statement sequence of the classic fit.
+   * worker). Runs the exact statement sequence of the classic fit. Progress
+   * events (including the identical sequence for sync and async drives) are
+   * emitted synchronously between steps; on any exit before completion —
+   * abort, input error, callback throw — the estimator ends up unfitted.
    */
-  *_fitSteps(X: Matrix): Generator<void, FitResult, void> {
+  *_fitSteps(X: Matrix, observer?: FitObserver): Generator<void, FitResult, void> {
     if (this.fitting) {
       throw new Error(
         'This PCA instance is already fitting; concurrent fits on one instance are not supported',
       );
     }
+    // Pre-fit validation: failures here leave any previous model intact.
+    if (X.rows < 1 || X.cols < 1) {
+      throw new Error(
+        `Found array with shape (${X.rows}, ${X.cols}); PCA requires at least 1 sample and 1 feature`,
+      );
+    }
+    assertAllFinite(X, 'PCA.fit');
     this.fitting = true;
+    let completed = false;
     try {
-      if (X.rows < 1 || X.cols < 1) {
-        throw new Error(
-          `Found array with shape (${X.rows}, ${X.cols}); PCA requires at least 1 sample and 1 feature`,
-        );
-      }
-      assertAllFinite(X, 'PCA.fit');
       this.dtype = X.dtype;
 
       const minDim = Math.min(X.rows, X.cols);
@@ -289,18 +302,42 @@ export class PCA extends BasePCA {
         ncOpt === null ? (solver !== 'arpack' ? minDim : minDim - 1) : ncOpt;
       this.fitSvdSolver_ = solver;
 
+      const reporter = makeReporter(observer, {
+        estimator: 'PCA',
+        solver,
+        nRows: X.rows,
+        whiten: this.opts.whiten,
+      });
+
+      let r: FitResult;
       if (solver === 'full' || solver === 'covariance_eigh') {
-        return yield* this.fitFullSteps(X, nc);
+        r = yield* this.fitFullSteps(X, nc, reporter);
+      } else {
+        r = yield* this.fitTruncatedSteps(X, nc, solver, reporter);
       }
-      return yield* this.fitTruncatedSteps(X, nc, solver);
+      if (reporter) {
+        reporter.emit({
+          phase: 'finalize',
+          step: 1,
+          totalSteps: 1,
+          snapshot: this.finalizeSnapshot(reporter, r),
+        });
+      }
+      completed = true;
+      return r;
     } finally {
       this.fitting = false;
+      if (!completed) {
+        // A failed or aborted fit leaves no (possibly inconsistent) model.
+        this.fitted = false;
+      }
     }
   }
 
   private *fitFullSteps(
     X: Matrix,
     nc: number | 'mle',
+    reporter: ProgressReporter | null,
     rawGram?: Float64Array,
   ): Generator<void, FitResult, void> {
     const n = X.rows;
@@ -321,6 +358,7 @@ export class PCA extends BasePCA {
     if (solver === 'full') {
       const xc = this.opts.copy ? X.data.slice() : X.data;
       centerInPlace(xc, n, p, meanF64);
+      reporter?.emit({ phase: 'decompose', step: 0, totalSteps: null });
       yield;
       const dec = svd(xc, n, p);
       u = dec.u;
@@ -335,12 +373,13 @@ export class PCA extends BasePCA {
       // covariance_eigh: form the Gram matrix and center it afterwards,
       // avoiding any copy or mutation of X. The WebGPU frontend passes the
       // Gram in precomputed; everything downstream is shared.
-      const c = rawGram ?? (yield* this.gramSteps(X));
+      const c = rawGram ?? (yield* this.gramSteps(X, reporter));
       for (let i = 0; i < p; i++) {
         for (let j = 0; j < p; j++) {
           c[i * p + j] = (c[i * p + j] - n * meanF64[i] * meanF64[j]) / (n - 1);
         }
       }
+      reporter?.emit({ phase: 'decompose', step: 0, totalSteps: null });
       yield;
       const dec = eigh(c, p);
       // Ascending → descending; clip tiny negatives (PSD by construction).
@@ -400,14 +439,21 @@ export class PCA extends BasePCA {
    * accumulation is strictly row-sequential, so the result is bitwise
    * identical to one monolithic syrkT pass.
    */
-  private *gramSteps(X: Matrix): Generator<void, Float64Array, void> {
+  private *gramSteps(
+    X: Matrix,
+    reporter: ProgressReporter | null,
+  ): Generator<void, Float64Array, void> {
     const n = X.rows;
     const p = X.cols;
     const c = new Float64Array(p * p);
     const chunkRows = Math.max(64, Math.ceil(2 ** 22 / (p * p)));
+    const totalSteps = Math.ceil(n / chunkRows);
+    let step = 0;
     for (let start = 0; start < n; start += chunkRows) {
       const end = Math.min(n, start + chunkRows);
       syrkTChunk(X.data, p, start, end, c);
+      step++;
+      reporter?.emit({ phase: 'gram', step, totalSteps });
       yield;
     }
     syrkTMirror(c, p);
@@ -418,6 +464,7 @@ export class PCA extends BasePCA {
     X: Matrix,
     nc: number | 'mle',
     solver: 'arpack' | 'randomized',
+    reporter: ProgressReporter | null,
   ): Generator<void, FitResult, void> {
     const n = X.rows;
     const p = X.cols;
@@ -438,7 +485,7 @@ export class PCA extends BasePCA {
       rng.uniform(-1, 1, v0);
       // scipy's svds returns ascending order and sklearn reverses it; our
       // Lanczos yields the same converged triplets already descending.
-      dec = yield* lanczosSvdSteps(xc, n, p, k, v0, rng);
+      dec = yield* lanczosSvdSteps(xc, n, p, k, v0, rng, reporter);
     } else {
       const gen = randomizedSvdSteps(n, p, k, {
         nOversamples: this.opts.nOversamples,
@@ -446,6 +493,7 @@ export class PCA extends BasePCA {
         powerIterationNormalizer: this.opts.powerIterationNormalizer,
         rng,
         float32Stream: this.dtype === 'float32',
+        hooks: reporter,
       });
       let step = gen.next();
       while (!step.done) {
@@ -521,7 +569,7 @@ export class PCA extends BasePCA {
     this.prepareFit(X, 'covariance_eigh');
     const minDim = Math.min(X.rows, X.cols);
     const ncOpt = this.opts.nComponents;
-    driveSync(this.fitFullSteps(X, ncOpt === null ? minDim : ncOpt, rawGram));
+    driveSync(this.fitFullSteps(X, ncOpt === null ? minDim : ncOpt, null, rawGram));
   }
 
   /**
@@ -553,6 +601,55 @@ export class PCA extends BasePCA {
     assertAllFinite(X, 'PCA.fit');
     this.dtype = X.dtype;
     this.fitSvdSolver_ = solver;
+  }
+
+  /**
+   * The final model as a snapshot (fresh float64 copies of the stored
+   * attributes — float32 fits produce float32-rounded values, faithfully
+   * reflecting the model). Scores use U·S when the solver produced a U
+   * (`fitTransform`'s math) and one projection GEMM for covariance_eigh,
+   * whose fit never mutates X.
+   */
+  private finalizeSnapshot(reporter: ProgressReporter, r: FitResult): PCAFitSnapshot | undefined {
+    if (!reporter.snapshotsEnabled) {
+      return undefined;
+    }
+    const comp = this.components_ as Matrix;
+    const k = this.nComponents_;
+    const p = this.nFeaturesIn_;
+    const snapshot: PCAFitSnapshot = {
+      components: new Matrix(toFloat64Copy(comp.data), k, p),
+      singularValues: toFloat64Copy(this.singularValues_ as FloatArray),
+      explainedVariance: toFloat64Copy(this.explainedVariance_ as FloatArray),
+    };
+    if (reporter.scoresRequested) {
+      const n = r.x.rows;
+      if (r.u !== null) {
+        const scores = new Float64Array(n * k);
+        const f = Math.sqrt(n - 1);
+        for (let i = 0; i < n; i++) {
+          for (let c = 0; c < k; c++) {
+            const uv = r.u[i * r.uCols + c];
+            scores[i * k + c] = this.opts.whiten ? uv * f : uv * r.s[c];
+          }
+        }
+        snapshot.scores = new Matrix(scores, n, k);
+      } else {
+        const ev = this.explainedVariance_ as FloatArray;
+        snapshot.scores = projectForSnapshot(
+          r.x.data,
+          n,
+          p,
+          comp.data,
+          k,
+          this.mean_ as FloatArray,
+          ev,
+          this.opts.whiten,
+          epsFor(dtypeOf(ev)),
+        );
+      }
+    }
+    return snapshot;
   }
 
   private storeFitted(

@@ -14,6 +14,7 @@
  * generator asynchronously against device-resident buffers, so the two paths
  * cannot drift structurally.
  */
+import type { SolverHooks } from '../progress.js';
 import type { FloatArray } from '../types.js';
 import { matmul, matmulTransA, transpose } from './blas.js';
 import { luFactor, permutedL } from './lu.js';
@@ -28,6 +29,14 @@ export interface RandomizedSvdOptions {
   rng: RandomState;
   /** Round the Gaussian test matrix to float32, as sklearn does for float32 inputs. */
   float32Stream: boolean;
+  /**
+   * Progress/snapshot channel (type-only dependency). Emits one event per
+   * power iteration; snapshot decompositions (an extra `finishFromBasis`
+   * pass whose GEMMs ride the ordinary yield channel) are computed only
+   * when `wantSnapshot` says so. Draws no RNG either way, so the stream is
+   * bit-identical with hooks on or off.
+   */
+  hooks?: SolverHooks | null;
 }
 
 /**
@@ -149,6 +158,7 @@ export function* randomizedSvdSteps(
   }
 
   // Power iterations imprint the top singular vectors of Aeff onto Q.
+  const hooks = opts.hooks ?? null;
   for (let it = 0; it < nIter; it++) {
     let t: Float64Array = yield mulAeff(q, qWidth); // effRows × qWidth
     t = applyNormalizer(t, effRows, qWidth);
@@ -156,6 +166,10 @@ export function* randomizedSvdSteps(
     q = yield mulAeffT(t, tWidth); // effCols × tWidth
     q = applyNormalizer(q, effCols, tWidth);
     qWidth = normalizer === 'none' ? tWidth : Math.min(effCols, tWidth);
+    if (hooks) {
+      const dec = hooks.wantSnapshot(it + 1) ? yield* finishFromBasis(q, qWidth) : null;
+      hooks.emit({ phase: 'power-iteration', step: it + 1, totalSteps: nIter, dec });
+    }
   }
 
   return yield* finishFromBasis(q, qWidth);
