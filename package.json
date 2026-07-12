@@ -23,7 +23,9 @@
   "engines": {
     "node": ">=20"
   },
-  "sideEffects": false,
+  "sideEffects": [
+    "./dist/worker/worker.js"
+  ],
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -32,6 +34,14 @@
     "./webgpu": {
       "types": "./dist/webgpu/index.d.ts",
       "default": "./dist/webgpu/index.js"
+    },
+    "./worker": {
+      "types": "./dist/worker/worker.d.ts",
+      "default": "./dist/worker/worker.js"
+    },
+    "./client": {
+      "types": "./dist/worker/client.d.ts",
+      "default": "./dist/worker/client.js"
     }
   },
   "files": [
