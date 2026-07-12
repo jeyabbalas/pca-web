@@ -20,6 +20,7 @@ import { centerInPlace, colMeans, cumsum, searchsortedRight } from './numeric/st
 import { type SvdResult, svd } from './numeric/svd.js';
 import { svdFlipVBased } from './numeric/svdflip.js';
 import {
+  type FitAsyncOptions,
   type FitObserver,
   makeReporter,
   type PCAFitSnapshot,
@@ -27,7 +28,7 @@ import {
   projectForSnapshot,
   toFloat64Copy,
 } from './progress.js';
-import { driveSync } from './scheduling.js';
+import { driveAsync, driveSync } from './scheduling.js';
 import { dtypeOf, epsFor, type FloatArray } from './types.js';
 import { assertAllFinite, checkFeatureCount } from './validation.js';
 
@@ -239,6 +240,29 @@ export class PCA extends BasePCA {
   fitTransform(X: MatrixInput, observer?: FitObserver): Matrix {
     const xm = asMatrix(X);
     const r = driveSync(this._fitSteps(xm, observer), observer?.signal);
+    return this.fitTransformFromResult(r);
+  }
+
+  /**
+   * Non-blocking fit: runs the exact same steps as `fit`, time-sliced on
+   * the event loop (`budgetMs` of work per slice), so the UI stays
+   * responsive. Results are bit-identical to the synchronous fit.
+   */
+  async fitAsync(X: MatrixInput, options: FitAsyncOptions = {}): Promise<this> {
+    await driveAsync(this._fitSteps(asMatrix(X), options), {
+      budgetMs: options.budgetMs,
+      signal: options.signal,
+    });
+    return this;
+  }
+
+  /** Non-blocking fitTransform — the same U·S fast path as the sync version. */
+  async fitTransformAsync(X: MatrixInput, options: FitAsyncOptions = {}): Promise<Matrix> {
+    const xm = asMatrix(X);
+    const r = await driveAsync(this._fitSteps(xm, options), {
+      budgetMs: options.budgetMs,
+      signal: options.signal,
+    });
     return this.fitTransformFromResult(r);
   }
 
