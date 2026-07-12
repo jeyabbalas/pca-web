@@ -69,11 +69,12 @@ function serve(pageJs) {
 async function runInBrowser(url, headless) {
   // channel 'chromium' selects the full Chromium build, whose "new headless"
   // mode supports WebGPU (the default headless shell does not).
-  const browser = await chromium.launch({
-    headless,
-    channel: 'chromium',
-    args: ['--enable-unsafe-webgpu', '--enable-features=WebGPU'],
-  });
+  const args = ['--enable-unsafe-webgpu', '--enable-features=WebGPU'];
+  if (process.env.CI) {
+    // Software WebGPU adapter for GPU-less CI runners.
+    args.push('--enable-unsafe-swiftshader');
+  }
+  const browser = await chromium.launch({ headless, channel: 'chromium', args });
   try {
     const page = await browser.newPage();
     page.on('console', (msg) => {
@@ -125,12 +126,25 @@ const server = await serve(pageJs);
 const { port } = server.address();
 const url = `http://127.0.0.1:${port}/`;
 
+/** A headed retry can only work where a display server exists. */
+function canRunHeaded() {
+  return (
+    process.platform !== 'linux' || Boolean(process.env.DISPLAY ?? process.env.WAYLAND_DISPLAY)
+  );
+}
+
 let mode = 'headless';
 let results = await runInBrowser(url, true);
-if (!results.gpuExecuted) {
+if (!results.gpuExecuted && canRunHeaded()) {
   console.log('Headless run did not reach the GPU; retrying headed…');
-  mode = 'headed';
-  results = await runInBrowser(url, false);
+  try {
+    results = await runInBrowser(url, false);
+    mode = 'headed';
+  } catch (err) {
+    // A display-less environment kills Chromium at launch; keep the headless
+    // report and fall through to the exit-2 "not executable" path.
+    console.error(`  headed retry failed to launch: ${String(err).split('\n')[0]}`);
+  }
 }
 report(results, mode);
 server.close();

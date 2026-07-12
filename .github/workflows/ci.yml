@@ -40,4 +40,15 @@ jobs:
       - run: npm ci
       - run: npx playwright install chromium --with-deps
       - run: npm run test:browser:worker
-      - run: npm run test:browser
+      # Exit 2 means no usable WebGPU adapter in this environment (the run's
+      # own report says what could not execute) — tolerated; real test
+      # failures (exit 1) still fail the job.
+      - run: |
+          npm run test:browser || {
+            code=$?
+            if [ "$code" -eq 2 ]; then
+              echo "::warning::GPU suite not executable on this runner (no WebGPU adapter)"
+            else
+              exit "$code"
+            fi
+          }
