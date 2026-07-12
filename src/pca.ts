@@ -340,12 +340,7 @@ export class PCA extends BasePCA {
         r = yield* this.fitTruncatedSteps(X, nc, solver, reporter);
       }
       if (reporter) {
-        reporter.emit({
-          phase: 'finalize',
-          step: 1,
-          totalSteps: 1,
-          snapshot: this.finalizeSnapshot(reporter, r),
-        });
+        this._emitFinalize(reporter, r.x, r.u, r.uCols, r.s);
       }
       completed = true;
       return r;
@@ -628,13 +623,40 @@ export class PCA extends BasePCA {
   }
 
   /**
+   * @internal Emits the finalize event (fraction 1, snapshot of the final
+   * model) after storeFitted — shared by _fitSteps and the WebGPU frontend.
+   * `u`/`s` are the fit's left vectors and singular values when the solver
+   * produced them (already sign-flipped), used for U·S snapshot scores.
+   */
+  _emitFinalize(
+    reporter: ProgressReporter,
+    x: Matrix,
+    u: Float64Array | null,
+    uCols: number,
+    s: Float64Array | null,
+  ): void {
+    reporter.emit({
+      phase: 'finalize',
+      step: 1,
+      totalSteps: 1,
+      snapshot: this.finalizeSnapshot(reporter, x, u, uCols, s),
+    });
+  }
+
+  /**
    * The final model as a snapshot (fresh float64 copies of the stored
    * attributes — float32 fits produce float32-rounded values, faithfully
    * reflecting the model). Scores use U·S when the solver produced a U
    * (`fitTransform`'s math) and one projection GEMM for covariance_eigh,
    * whose fit never mutates X.
    */
-  private finalizeSnapshot(reporter: ProgressReporter, r: FitResult): PCAFitSnapshot | undefined {
+  private finalizeSnapshot(
+    reporter: ProgressReporter,
+    x: Matrix,
+    u: Float64Array | null,
+    uCols: number,
+    s: Float64Array | null,
+  ): PCAFitSnapshot | undefined {
     if (!reporter.snapshotsEnabled) {
       return undefined;
     }
@@ -647,21 +669,21 @@ export class PCA extends BasePCA {
       explainedVariance: toFloat64Copy(this.explainedVariance_ as FloatArray),
     };
     if (reporter.scoresRequested) {
-      const n = r.x.rows;
-      if (r.u !== null) {
+      const n = x.rows;
+      if (u !== null && s !== null) {
         const scores = new Float64Array(n * k);
         const f = Math.sqrt(n - 1);
         for (let i = 0; i < n; i++) {
           for (let c = 0; c < k; c++) {
-            const uv = r.u[i * r.uCols + c];
-            scores[i * k + c] = this.opts.whiten ? uv * f : uv * r.s[c];
+            const uv = u[i * uCols + c];
+            scores[i * k + c] = this.opts.whiten ? uv * f : uv * s[c];
           }
         }
         snapshot.scores = new Matrix(scores, n, k);
       } else {
         const ev = this.explainedVariance_ as FloatArray;
         snapshot.scores = projectForSnapshot(
-          r.x.data,
+          x.data,
           n,
           p,
           comp.data,

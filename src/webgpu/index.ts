@@ -10,5 +10,16 @@
 
 export { asMatrix, Matrix, type MatrixInput } from '../matrix.js';
 export { PCA, type PCAOptions, type PowerIterationNormalizer, type SvdSolver } from '../pca.js';
+export type {
+  FitAsyncOptions,
+  FitObserver,
+  FitPhase,
+  FitSolverId,
+  PCAFitProgress,
+  PCAFitSnapshot,
+  SnapshotOptions,
+} from '../progress.js';
+export type { AbortSignalLike } from '../scheduling.js';
+export { FitAbortError } from '../scheduling.js';
 export { GpuEngine, isWebGPUSupported, type WebGPUDeviceOptions } from './engine.js';
 export { WebGPUPCA, type WebGPUPCAOptions } from './gpu-pca.js';

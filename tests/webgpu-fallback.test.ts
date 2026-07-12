@@ -6,7 +6,7 @@
  * lives in tests/browser/, run by `npm run test:browser`.)
  */
 import { describe, expect, it } from 'vitest';
-import { Matrix, PCA, RandomState } from '../src/index.js';
+import { Matrix, PCA, type PCAFitProgress, RandomState } from '../src/index.js';
 import { isWebGPUSupported, WebGPUPCA } from '../src/webgpu/index.js';
 
 function demoData(n: number, p: number, seed: number): Matrix {
@@ -74,5 +74,85 @@ describe('WebGPUPCA in a WebGPU-less environment', () => {
     const bad = demoData(10, 5, 2);
     bad.data[3] = Number.NaN;
     await expect(new WebGPUPCA().fit(bad)).rejects.toThrow(/NaN/);
+  });
+});
+
+describe('WebGPUPCA observer and abort on the CPU fallback', () => {
+  it('threads progress events through fit (identical sequence to plain fitAsync)', async () => {
+    const X = demoData(600, 500, 42);
+    const opts = { nComponents: 8, svdSolver: 'randomized' as const, randomState: 0 };
+
+    const gpuEvents: PCAFitProgress[] = [];
+    const gpu = new WebGPUPCA(opts);
+    await gpu.fit(X, {
+      onProgress: (e) => gpuEvents.push(e),
+      snapshot: { components: true, scores: true },
+    });
+    expect(gpu.backend).toBe('cpu');
+
+    const cpuEvents: PCAFitProgress[] = [];
+    const cpu = new PCA(opts);
+    await cpu.fitAsync(X, {
+      onProgress: (e) => cpuEvents.push(e),
+      snapshot: { components: true, scores: true },
+    });
+
+    expect(gpuEvents.length).toBe(cpuEvents.length);
+    gpuEvents.forEach((e, i) => {
+      expect(e.phase).toBe(cpuEvents[i].phase);
+      expect(e.step).toBe(cpuEvents[i].step);
+      expect(e.fraction).toBe(cpuEvents[i].fraction);
+      expect(e.snapshot?.components.data).toEqual(cpuEvents[i].snapshot?.components.data);
+      expect(e.snapshot?.scores?.data).toEqual(cpuEvents[i].snapshot?.scores?.data);
+    });
+    expect(gpu.components.data).toEqual(cpu.components.data);
+  });
+
+  it('abort rejects with AbortError and does not fall through to a CPU refit', async () => {
+    const X = demoData(600, 500, 7);
+    const controller = new AbortController();
+    const gpu = new WebGPUPCA({ nComponents: 8, svdSolver: 'randomized', randomState: 0 });
+    let events = 0;
+    await expect(
+      gpu.fit(X, {
+        signal: controller.signal,
+        onProgress: () => {
+          events++;
+          controller.abort();
+        },
+      }),
+    ).rejects.toMatchObject({ name: 'AbortError' });
+    // Exactly one event: the fit stopped instead of restarting on the CPU.
+    expect(events).toBe(1);
+    expect(() => gpu.components).toThrow(/not fitted/);
+  });
+
+  it('pre-aborted fit rejects before any work', async () => {
+    const X = demoData(100, 20, 3);
+    const controller = new AbortController();
+    controller.abort();
+    const gpu = new WebGPUPCA({ nComponents: 4 });
+    await expect(gpu.fit(X, { signal: controller.signal })).rejects.toMatchObject({
+      name: 'AbortError',
+    });
+  });
+
+  it('fitTransform threads options and stays bit-identical', async () => {
+    const X = demoData(1200, 60, 7);
+    const events: PCAFitProgress[] = [];
+    const gpu = new WebGPUPCA({ nComponents: 5 });
+    const gt = await gpu.fitTransform(X, { onProgress: (e) => events.push(e) });
+    const ct = new PCA({ nComponents: 5 }).fitTransform(X);
+    expect(gt.data).toEqual(ct.data);
+    expect(events[events.length - 1].phase).toBe('finalize');
+  });
+
+  it('concurrent fits on one instance throw', async () => {
+    const X = demoData(100, 20, 5);
+    const gpu = new WebGPUPCA({ nComponents: 4 });
+    const first = gpu.fit(X);
+    await expect(gpu.fitTransform(X)).rejects.toThrow(/already fitting/);
+    await first;
+    expect(gpu.nComponents).toBe(4);
   });
 });

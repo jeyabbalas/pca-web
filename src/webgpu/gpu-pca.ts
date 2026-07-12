@@ -27,6 +27,8 @@ import {
   type SvdSolver,
   validateNcForSolver,
 } from '../pca.js';
+import { type FitAsyncOptions, makeReporter } from '../progress.js';
+import { throwIfAborted } from '../scheduling.js';
 import type { FloatArray } from '../types.js';
 import { assertAllFinite, checkFeatureCount } from '../validation.js';
 import { GpuEngine, isWebGPUSupported, type WebGPUDeviceOptions } from './engine.js';
@@ -56,6 +58,7 @@ export class WebGPUPCA {
   private enginePromise: Promise<GpuEngine | null> | null = null;
   private engine: GpuEngine | null = null;
   private backend_: 'webgpu' | 'cpu' = 'cpu';
+  private gpuFitting = false;
 
   constructor(options: WebGPUPCAOptions = {}) {
     const { device, powerPreference, minGpuElements, ...pcaOptions } = options;
@@ -95,63 +98,85 @@ export class WebGPUPCA {
   // Fitting
   // ------------------------------------------------------------------
 
-  async fit(X: MatrixInput): Promise<this> {
+  async fit(X: MatrixInput, options: FitAsyncOptions = {}): Promise<this> {
     const xm = asMatrix(X);
-    const route = await this.route(xm);
-    if (route === 'cpu') {
-      this.cpu.fit(xm);
-      this.backend_ = 'cpu';
-      return this;
-    }
+    this.guardConcurrentFit();
     try {
-      if (route === 'covariance_eigh') {
-        await this.fitGramGpu(xm);
-      } else {
-        await this.fitRandomizedGpu(xm);
+      const route = await this.route(xm);
+      if (route === 'cpu') {
+        // The fallback is non-blocking, observable, and abortable too —
+        // and still bit-identical to the plain PCA class.
+        await this.cpu.fitAsync(xm, options);
+        this.backend_ = 'cpu';
+        return this;
       }
-    } catch (err) {
-      this.recoverOnGpuError(xm, err);
+      try {
+        if (route === 'covariance_eigh') {
+          await this.fitGramGpu(xm, options);
+        } else {
+          await this.fitRandomizedGpu(xm, options);
+        }
+      } catch (err) {
+        await this.recoverOnGpuError(xm, err, options);
+      }
+      return this;
+    } finally {
+      this.gpuFitting = false;
     }
-    return this;
   }
 
-  async fitTransform(X: MatrixInput): Promise<Matrix> {
+  async fitTransform(X: MatrixInput, options: FitAsyncOptions = {}): Promise<Matrix> {
     const xm = asMatrix(X);
-    const route = await this.route(xm);
-    if (route === 'cpu') {
-      this.backend_ = 'cpu';
-      return this.cpu.fitTransform(xm);
-    }
-    if (route === 'covariance_eigh') {
-      try {
-        await this.fitGramGpu(xm);
-      } catch (err) {
-        this.recoverOnGpuError(xm, err);
-      }
-      // sklearn's fit_transform for covariance_eigh IS transform-after-fit
-      // (no U is computed at fit time), so this matches exactly.
-      return this.transform(xm);
-    }
-    let dec: SvdResult;
+    this.guardConcurrentFit();
     try {
-      dec = await this.fitRandomizedGpu(xm);
-    } catch (err) {
-      this.recoverOnGpuError(xm, err, 'skipFit');
-      return this.cpu.fitTransform(xm);
-    }
-    // Randomized fast path: X_new = U·S (or U·√(n−1) when whitening),
-    // exactly like PCA.fitTransform.
-    const n = xm.rows;
-    const k = this.cpu.nComponents;
-    const out = new Float64Array(n * k);
-    const whiten = this.cpu.whiten;
-    const f = Math.sqrt(n - 1);
-    for (let i = 0; i < n; i++) {
-      for (let c = 0; c < k; c++) {
-        out[i * k + c] = whiten ? dec.u[i * k + c] * f : dec.u[i * k + c] * dec.s[c];
+      const route = await this.route(xm);
+      if (route === 'cpu') {
+        this.backend_ = 'cpu';
+        return await this.cpu.fitTransformAsync(xm, options);
       }
+      if (route === 'covariance_eigh') {
+        try {
+          await this.fitGramGpu(xm, options);
+        } catch (err) {
+          await this.recoverOnGpuError(xm, err, options);
+        }
+        // sklearn's fit_transform for covariance_eigh IS transform-after-fit
+        // (no U is computed at fit time), so this matches exactly.
+        return await this.transform(xm);
+      }
+      let dec: SvdResult;
+      try {
+        dec = await this.fitRandomizedGpu(xm, options);
+      } catch (err) {
+        await this.recoverOnGpuError(xm, err, options, 'skipFit');
+        return await this.cpu.fitTransformAsync(xm, options);
+      }
+      // Randomized fast path: X_new = U·S (or U·√(n−1) when whitening),
+      // exactly like PCA.fitTransform.
+      const n = xm.rows;
+      const k = this.cpu.nComponents;
+      const out = new Float64Array(n * k);
+      const whiten = this.cpu.whiten;
+      const f = Math.sqrt(n - 1);
+      for (let i = 0; i < n; i++) {
+        for (let c = 0; c < k; c++) {
+          out[i * k + c] = whiten ? dec.u[i * k + c] * f : dec.u[i * k + c] * dec.s[c];
+        }
+      }
+      return new Matrix(castTo(out, xm.dtype), n, k);
+    } finally {
+      this.gpuFitting = false;
     }
-    return new Matrix(castTo(out, xm.dtype), n, k);
+  }
+
+  /** Concurrent fits on one instance would interleave GPU state; throw early. */
+  private guardConcurrentFit(): void {
+    if (this.gpuFitting) {
+      throw new Error(
+        'This WebGPUPCA instance is already fitting; concurrent fits on one instance are not supported',
+      );
+    }
+    this.gpuFitting = true;
   }
 
   /**
@@ -178,13 +203,27 @@ export class WebGPUPCA {
   }
 
   /** GPU Gram product + shared CPU covariance_eigh tail. Mutates nothing on failure. */
-  private async fitGramGpu(xm: Matrix): Promise<void> {
+  private async fitGramGpu(xm: Matrix, options: FitAsyncOptions): Promise<void> {
     const eng = this.engine as GpuEngine;
+    const reporter = makeReporter(options, {
+      estimator: 'PCA',
+      solver: 'covariance_eigh',
+      nRows: xm.rows,
+      whiten: this.cpu.whiten,
+    });
+    throwIfAborted(options.signal);
     const gx = eng.upload(xm.data, xm.rows, xm.cols);
     try {
+      reporter?.emit({ phase: 'gram', step: 0, totalSteps: 1 });
       const gram = await eng.syrk(gx);
+      reporter?.emit({ phase: 'gram', step: 1, totalSteps: 1 });
+      throwIfAborted(options.signal);
+      reporter?.emit({ phase: 'decompose', step: 0, totalSteps: null });
       this.cpu._fitGram(xm, gram);
       this.backend_ = 'webgpu';
+      if (reporter) {
+        this.cpu._emitFinalize(reporter, xm, null, 0, null);
+      }
     } finally {
       gx.destroy();
     }
@@ -196,27 +235,39 @@ export class WebGPUPCA {
    * algorithm generator with GPU GEMMs. Returns the (sign-flipped)
    * decomposition for the fitTransform fast path.
    */
-  private async fitRandomizedGpu(xm: Matrix): Promise<SvdResult> {
+  private async fitRandomizedGpu(xm: Matrix, options: FitAsyncOptions): Promise<SvdResult> {
     const eng = this.engine as GpuEngine;
     const o = this.cpu._resolvedOptions();
     const n = xm.rows;
     const p = xm.cols;
     const nc = (o.nComponents === null ? Math.min(n, p) : o.nComponents) as number;
+    const reporter = makeReporter(options, {
+      estimator: 'PCA',
+      solver: 'randomized',
+      nRows: n,
+      whiten: this.cpu.whiten,
+    });
+    throwIfAborted(options.signal);
     const meanF64 = colMeans(xm.data, n, p);
     const xc: FloatArray = o.copy ? xm.data.slice() : xm.data;
     centerInPlace(xc, n, p, meanF64);
     const gx = eng.upload(xc, n, p);
     try {
       const rng = checkRandomState(o.randomState);
+      // The reporter rides the solver's hooks: power-iteration events and
+      // snapshot decompositions surface as ordinary GEMM requests below, so
+      // X stays device-resident throughout.
       const gen = randomizedSvdSteps(n, p, nc, {
         nOversamples: o.nOversamples,
         nIter: o.iteratedPower,
         powerIterationNormalizer: o.powerIterationNormalizer,
         rng,
         float32Stream: xm.dtype === 'float32',
+        hooks: reporter,
       });
       let step = gen.next();
       while (!step.done) {
+        throwIfAborted(options.signal);
         const req = step.value;
         const result =
           req.op === 'mulA'
@@ -229,6 +280,9 @@ export class WebGPUPCA {
       const dec: SvdResult = step.value;
       this.cpu._fitDecomposed(xm, xc, meanF64, dec);
       this.backend_ = 'webgpu';
+      if (reporter) {
+        this.cpu._emitFinalize(reporter, xm, dec.u, nc, dec.s);
+      }
       return dec;
     } catch (err) {
       if (!o.copy) {
@@ -242,14 +296,26 @@ export class WebGPUPCA {
     }
   }
 
-  /** CPU refit after a GPU failure, unless the input was already mutated. */
-  private recoverOnGpuError(xm: Matrix, err: unknown, mode?: 'skipFit'): void {
+  /**
+   * CPU refit after a GPU failure — unless the input was already mutated,
+   * or the "failure" is a cancellation: an abort must reject with the abort
+   * error, never silently refit on the CPU.
+   */
+  private async recoverOnGpuError(
+    xm: Matrix,
+    err: unknown,
+    options: FitAsyncOptions,
+    mode?: 'skipFit',
+  ): Promise<void> {
     if (err instanceof GpuFitUnrecoverableError) {
       throw err.cause;
     }
+    if (options.signal?.aborted || (err as { name?: unknown } | null)?.name === 'AbortError') {
+      throw err;
+    }
     this.backend_ = 'cpu';
     if (mode !== 'skipFit') {
-      this.cpu.fit(xm);
+      await this.cpu.fitAsync(xm, options);
     }
   }
 
