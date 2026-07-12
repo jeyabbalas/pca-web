@@ -26,7 +26,14 @@ import {
   renderTiles,
   resizeAllCharts,
 } from './charts';
-import { type Dataset, type DemoDtype, loadDigits, makeSynthetic } from './data';
+import {
+  type Dataset,
+  type DemoDtype,
+  isPresetKind,
+  loadDigits,
+  makeSynthetic,
+  PRESET_INFO,
+} from './data';
 import {
   addRunRow,
   bindSliderOutput,
@@ -136,14 +143,28 @@ function refreshConfigUI(): void {
       cpu.checked = true;
     }
   }
-  byId('synthetic-controls').hidden = readRadio('dataset') !== 'synthetic';
+  const sel = readRadio('dataset');
+  byId('synthetic-controls').hidden = sel !== 'synthetic';
+  if (isPresetKind(sel)) {
+    // The fixed presets have small p; lower an out-of-range integer nComponents
+    // so the default "16" doesn't make every fit fail on the 3-D presets.
+    const nc = inputEl('cfg-ncomponents');
+    const v = Number(nc.value);
+    if (Number.isInteger(v) && v > PRESET_INFO[sel].p) {
+      nc.value = `${PRESET_INFO[sel].p}`;
+    }
+  }
   updateDataStatus();
 }
 
 function updateDataStatus(): void {
   const dtype = readRadio('dtype');
-  if (readRadio('dataset') === 'digits') {
+  const sel = readRadio('dataset');
+  if (sel === 'digits') {
     setStatus('data-status', `sklearn digits: 1797×64 (8×8 images, values 0–16), ${dtype}`);
+  } else if (isPresetKind(sel)) {
+    const info = PRESET_INFO[sel];
+    setStatus('data-status', `${info.blurb} — ${info.n}×${info.p}, ${dtype} (generated on Fit)`);
   } else {
     const n = inputEl('synth-n').value;
     const p = inputEl('synth-p').value;
@@ -171,9 +192,17 @@ let dataset: Dataset | null = null;
 
 async function ensureDataset(): Promise<Dataset> {
   const dtype = readRadio('dtype') as DemoDtype;
-  if (readRadio('dataset') === 'digits') {
+  const sel = readRadio('dataset');
+  if (sel === 'digits') {
     if (dataset?.key !== `digits|${dtype}`) {
       dataset = await loadDigits(dtype);
+    }
+    return dataset;
+  }
+  if (isPresetKind(sel)) {
+    const key = `${sel}|${dtype}`;
+    if (dataset?.key !== key) {
+      dataset = PRESET_INFO[sel].make(dtype);
     }
     return dataset;
   }
@@ -310,7 +339,7 @@ function trackWorkerEst(est: WorkerPCA | WorkerIncrementalPCA): void {
 // Progress plumbing
 // ---------------------------------------------------------------------
 
-function makeProgressHandler(labels: Uint8Array): (e: PCAFitProgress) => void {
+function makeProgressHandler(data: Dataset): (e: PCAFitProgress) => void {
   let lastDraw = 0;
   return (e) => {
     let label = `${e.phase} ${e.step}${e.totalSteps !== null ? `/${e.totalSteps}` : ''}`;
@@ -322,7 +351,7 @@ function makeProgressHandler(labels: Uint8Array): (e: PCAFitProgress) => void {
       const now = performance.now();
       if (now - lastDraw > 80 || e.phase === 'finalize') {
         lastDraw = now;
-        scatter.update(e.snapshot.scores, labels);
+        scatter.update(e.snapshot.scores, data.labels, undefined, data.palette);
       }
     }
   };
@@ -340,7 +369,7 @@ async function runPCA(cfg: RunConfig, data: Dataset, signal: AbortSignal): Promi
     iteratedPower: cfg.iteratedPower,
     randomState: cfg.seed,
   };
-  const onProgress = makeProgressHandler(data.labels);
+  const onProgress = makeProgressHandler(data);
   if (cfg.mode === 'worker') {
     const est = new WorkerPCA({
       ...options,
@@ -447,7 +476,7 @@ async function runIPCA(cfg: RunConfig, data: Dataset, signal: AbortSignal): Prom
       const now = performance.now();
       if (now - lastDraw > 300 || b === bounds.length - 1) {
         lastDraw = now;
-        scatter.update(await est.transform(data.X), data.labels);
+        scatter.update(await est.transform(data.X), data.labels, undefined, data.palette);
       }
       if (cfg.mode === 'async') {
         await new Promise((r) => setTimeout(r, 0));
@@ -586,7 +615,7 @@ async function renderResults(s: Session): Promise<void> {
   const dataMatches = s.data !== null && s.data.p === s.p;
   if (dataMatches && s.data !== null) {
     s.embedding = await s.transform(s.data.X);
-    scatter.update(s.embedding, s.data.labels);
+    scatter.update(s.embedding, s.data.labels, undefined, s.data.palette);
   }
   renderEigenTiles(s);
   await setupReconstruction(s, dataMatches ? s.data : null);
@@ -764,7 +793,7 @@ async function renderOutliers(s: Session, data: Dataset | null): Promise<void> {
       `${outliers.size} samples at or below the 2nd-percentile log-likelihood (${thr.toFixed(1)}) — ringed in the embedding above`,
     );
     if (s.embedding !== null) {
-      scatter.update(s.embedding, data.labels, outliers);
+      scatter.update(s.embedding, data.labels, outliers, data.palette);
     }
   } catch (err) {
     setStatus('outlier-note', `scoreSamples unavailable: ${(err as Error).message}`, 'err');

@@ -63,8 +63,16 @@ function hookResize(): void {
 // ---------------------------------------------------------------------
 
 export interface ScatterView {
-  /** Redraws PC1×PC2 of `scores`, colored by label; `outliers` get red rings. */
-  update(scores: Matrix, labels: Uint8Array | null, outliers?: Set<number>): void;
+  /**
+   * Redraws PC1×PC2 of `scores`, colored by label; `outliers` get red rings.
+   * `palette` overrides the default categorical colors (e.g. a rainbow ramp).
+   */
+  update(
+    scores: Matrix,
+    labels: Uint8Array | null,
+    outliers?: Set<number>,
+    palette?: string[],
+  ): void;
   clear(): void;
 }
 
@@ -78,7 +86,8 @@ export function createScatter(el: HTMLElement): ScatterView {
     yAxis: { type: 'value', scale: true, name: 'PC2' },
   });
   return {
-    update(scores, labels, outliers) {
+    update(scores, labels, outliers, palette) {
+      const pal = palette ?? PALETTE;
       const n = scores.rows;
       const twoD = scores.cols >= 2;
       const byClass = new Map<number, number[][]>();
@@ -107,7 +116,7 @@ export function createScatter(el: HTMLElement): ScatterView {
           large: true,
           largeThreshold: 5000,
           silent: true,
-          itemStyle: { color: PALETTE[c % PALETTE.length] },
+          itemStyle: { color: pal[c % pal.length] },
         }));
       if (outlierPts.length > 0) {
         series.push({
