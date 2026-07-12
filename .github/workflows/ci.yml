@@ -26,11 +26,11 @@ jobs:
       - run: npm test
       - run: npm run demo:build
 
-  # Real-browser suites (Playwright Chromium; GPU cases run on SwiftShader).
-  # Advisory: headless-GPU availability varies across runner images.
+  # Real-browser suites (Playwright Chromium). The worker suite needs no
+  # GPU and is required; the GPU suite (SwiftShader on CI runners) is
+  # advisory because headless-GPU availability varies across runner images.
   browser:
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -41,9 +41,10 @@ jobs:
       - run: npx playwright install chromium --with-deps
       - run: npm run test:browser:worker
       # Exit 2 means no usable WebGPU adapter in this environment (the run's
-      # own report says what could not execute) — tolerated; real test
-      # failures (exit 1) still fail the job.
-      - run: |
+      # own report says what could not execute) — tolerated with a warning;
+      # real test failures (exit 1) turn the step red, but stay advisory.
+      - continue-on-error: true
+        run: |
           npm run test:browser || {
             code=$?
             if [ "$code" -eq 2 ]; then
