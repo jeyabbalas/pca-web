@@ -76,14 +76,55 @@ export interface ScatterView {
   clear(): void;
 }
 
+/** Round interval ticks only — the exact equal-aspect bounds make ugly labels. */
+const tickLabels = {
+  formatter: (v: number): string => `${Number(v.toPrecision(3))}`,
+  showMinLabel: false,
+  showMaxLabel: false,
+};
+
+interface AxisBounds {
+  xAxis?: { min: number; max: number };
+  yAxis?: { min: number; max: number };
+}
+
+/**
+ * Equal-aspect axis bounds: expands the proportionally shorter range so one
+ * data unit spans the same number of pixels on both axes — rings stay round
+ * and manifolds keep their shape. Falls back to ECharts' own scaling when
+ * the chart has no measurable size yet.
+ */
+function equalAspectBounds(
+  chart: EChartsType,
+  xMin: number,
+  xMax: number,
+  yMin: number,
+  yMax: number,
+): AxisBounds {
+  const w = chart.getWidth() - 60; // grid margins: left 45 + right 15
+  const h = chart.getHeight() - 65; // grid margins: top 30 + bottom 35
+  if (!(w > 0) || !(h > 0) || !Number.isFinite(xMax - xMin) || !Number.isFinite(yMax - yMin)) {
+    return {};
+  }
+  const xr = (xMax - xMin || 1) * 1.04;
+  const yr = (yMax - yMin || 1) * 1.04;
+  const unit = Math.max(xr / w, yr / h);
+  const cx = (xMin + xMax) / 2;
+  const cy = (yMin + yMax) / 2;
+  return {
+    xAxis: { min: cx - (unit * w) / 2, max: cx + (unit * w) / 2 },
+    yAxis: { min: cy - (unit * h) / 2, max: cy + (unit * h) / 2 },
+  };
+}
+
 export function createScatter(el: HTMLElement): ScatterView {
   hookResize();
   const chart = makeChart(el, {
     animation: false,
     grid: { left: 45, right: 15, top: 30, bottom: 35 },
     legend: { top: 0, type: 'scroll', itemWidth: 12, itemHeight: 8 },
-    xAxis: { type: 'value', scale: true, name: 'PC1' },
-    yAxis: { type: 'value', scale: true, name: 'PC2' },
+    xAxis: { type: 'value', scale: true, name: 'PC1', axisLabel: tickLabels },
+    yAxis: { type: 'value', scale: true, name: 'PC2', axisLabel: tickLabels },
   });
   return {
     update(scores, labels, outliers, palette) {
@@ -92,9 +133,25 @@ export function createScatter(el: HTMLElement): ScatterView {
       const twoD = scores.cols >= 2;
       const byClass = new Map<number, number[][]>();
       const outlierPts: number[][] = [];
+      let xMin = Number.POSITIVE_INFINITY;
+      let xMax = Number.NEGATIVE_INFINITY;
+      let yMin = Number.POSITIVE_INFINITY;
+      let yMax = Number.NEGATIVE_INFINITY;
       for (let i = 0; i < n; i++) {
         const x = scores.get(i, 0);
         const y = twoD ? scores.get(i, 1) : 0;
+        if (x < xMin) {
+          xMin = x;
+        }
+        if (x > xMax) {
+          xMax = x;
+        }
+        if (y < yMin) {
+          yMin = y;
+        }
+        if (y > yMax) {
+          yMax = y;
+        }
         if (outliers?.has(i)) {
           outlierPts.push([x, y]);
         }
@@ -128,7 +185,10 @@ export function createScatter(el: HTMLElement): ScatterView {
           itemStyle: { color: 'rgba(0,0,0,0)', borderColor: '#c0392b', borderWidth: 1.5 },
         });
       }
-      chart.setOption({ series } as EChartsCoreOption, { replaceMerge: ['series'] });
+      chart.setOption(
+        { ...equalAspectBounds(chart, xMin, xMax, yMin, yMax), series } as EChartsCoreOption,
+        { replaceMerge: ['series'] },
+      );
     },
     clear() {
       chart.setOption({ series: [] } as EChartsCoreOption, { replaceMerge: ['series'] });
