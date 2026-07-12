@@ -22,6 +22,8 @@ export abstract class BasePCA {
   protected readonly estimatorName: string = 'PCA';
 
   protected fitted = false;
+  /** True while a fit generator is live — re-entrant fits on one instance throw. */
+  protected fitting = false;
   protected dtype: Dtype = 'float64';
   protected whitenOpt = false;
 
