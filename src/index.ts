@@ -10,6 +10,20 @@ export type { IncrementalPCAOptions } from './incremental-pca.js';
 export { IncrementalPCA } from './incremental-pca.js';
 export type { MatrixInput } from './matrix.js';
 export { asMatrix, Matrix } from './matrix.js';
+export type {
+  AnyPCAModel,
+  IncrementalPCAModel,
+  IncrementalPCAModelOptions,
+  PCAModel,
+  PCAModelBaseFields,
+  PCAModelOptions,
+} from './model.js';
+export {
+  assertValidModel,
+  modelFromJSON,
+  modelToJSON,
+  PCA_MODEL_FORMAT_VERSION,
+} from './model.js';
 export type { PCAOptions, PowerIterationNormalizer, SvdSolver } from './pca.js';
 export { PCA, RandomState } from './pca.js';
 export type {

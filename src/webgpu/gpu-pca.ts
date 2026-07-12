@@ -16,6 +16,7 @@
  */
 import { castTo } from '../base.js';
 import { asMatrix, Matrix, type MatrixInput } from '../matrix.js';
+import type { PCAModel } from '../model.js';
 import { randomizedSvdSteps } from '../numeric/randomized.js';
 import { checkRandomState } from '../numeric/rng.js';
 import { centerInPlace, colMeans } from '../numeric/stats.js';
@@ -52,7 +53,7 @@ class GpuFitUnrecoverableError extends Error {
 }
 
 export class WebGPUPCA {
-  private readonly cpu: PCA;
+  private cpu: PCA;
   private readonly deviceOptions: WebGPUDeviceOptions;
   private readonly minGpuElements: number;
   private enginePromise: Promise<GpuEngine | null> | null = null;
@@ -407,6 +408,29 @@ export class WebGPUPCA {
   }
   getFeatureNamesOut(): string[] {
     return this.cpu.getFeatureNamesOut();
+  }
+
+  // ------------------------------------------------------------------
+  // Model serialization
+  // ------------------------------------------------------------------
+
+  /** The fitted model as a plain object — identical to the CPU class's. */
+  toModel(): PCAModel {
+    return this.cpu.toModel();
+  }
+
+  /**
+   * Rehydrates a fitted WebGPUPCA. `options` supplies the device knobs
+   * (powerPreference, injected device, minGpuElements); the PCA options
+   * come from the model itself.
+   */
+  static fromModel(
+    model: PCAModel,
+    options: WebGPUDeviceOptions & { minGpuElements?: number } = {},
+  ): WebGPUPCA {
+    const gpu = new WebGPUPCA({ ...model.options, ...options });
+    gpu.cpu = PCA.fromModel(model);
+    return gpu;
   }
 
   // ------------------------------------------------------------------

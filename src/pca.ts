@@ -9,6 +9,7 @@
  */
 import { BasePCA, castTo, promoteDtype } from './base.js';
 import { asMatrix, Matrix, type MatrixInput } from './matrix.js';
+import { assertValidModel, type PCAModel, type PCAModelOptions } from './model.js';
 import { syrkTChunk, syrkTMirror } from './numeric/blas.js';
 import { eigh } from './numeric/eigh.js';
 import { lanczosSvdSteps } from './numeric/lanczos.js';
@@ -718,6 +719,51 @@ export class PCA extends BasePCA {
     this.singularValues_ = castTo(s.slice(0, k), dt);
     this.mean_ = castTo(meanF64, dt);
     this.fitted = true;
+  }
+
+  // ------------------------------------------------------------------
+  // Model serialization
+  // ------------------------------------------------------------------
+
+  /**
+   * The fitted model as a plain structured-clone-friendly object (tight
+   * typed-array copies) — for `postMessage`, IndexedDB, or `modelToJSON`.
+   * A live `RandomState` in the options serializes as null.
+   */
+  toModel(): PCAModel {
+    const base = this.exportBaseModel();
+    const o = this.opts;
+    return {
+      ...base,
+      estimator: 'pca',
+      nSamples: this.nSamples_,
+      svdSolver: this.fitSvdSolver_,
+      options: {
+        nComponents: o.nComponents,
+        copy: o.copy,
+        whiten: o.whiten,
+        svdSolver: o.svdSolver,
+        tol: o.tol,
+        iteratedPower: o.iteratedPower,
+        nOversamples: o.nOversamples,
+        powerIterationNormalizer: o.powerIterationNormalizer,
+        randomState: typeof o.randomState === 'number' ? o.randomState : null,
+      } satisfies PCAModelOptions,
+    };
+  }
+
+  /**
+   * Rehydrates a fitted PCA from `toModel()` output (validated first).
+   * The model's arrays are adopted without copying — pass a copy if the
+   * caller keeps mutating the model object.
+   */
+  static fromModel(model: PCAModel): PCA {
+    assertValidModel(model, 'pca');
+    const pca = new PCA(model.options);
+    pca.importBaseModel(model);
+    pca.nSamples_ = model.nSamples;
+    pca.fitSvdSolver_ = model.svdSolver;
+    return pca;
   }
 
   // ------------------------------------------------------------------

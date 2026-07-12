@@ -5,6 +5,7 @@
  */
 
 import { asMatrix, Matrix, type MatrixInput } from './matrix.js';
+import { PCA_MODEL_FORMAT_VERSION, type PCAModelBaseFields } from './model.js';
 import { matmul, matmulTransB } from './numeric/blas.js';
 import { inverse } from './numeric/lu.js';
 import { type Dtype, dtypeOf, epsFor, type FloatArray } from './types.js';
@@ -343,5 +344,48 @@ export abstract class BasePCA {
       names[i] = `${prefix}${i}`;
     }
     return names;
+  }
+
+  // ------------------------------------------------------------------
+  // Model serialization
+  // ------------------------------------------------------------------
+
+  /**
+   * The shared fitted attributes as tight copies — a snapshot fully
+   * decoupled from live estimator state, safe to transfer or persist.
+   */
+  protected exportBaseModel(): PCAModelBaseFields {
+    this.assertFitted();
+    return {
+      formatVersion: PCA_MODEL_FORMAT_VERSION,
+      dtype: this.dtype,
+      nComponents: this.nComponents_,
+      nFeaturesIn: this.nFeaturesIn_,
+      whiten: this.whitenOpt,
+      noiseVariance: this.noiseVariance_,
+      components: (this.components_ as Matrix).data.slice(),
+      mean: (this.mean_ as FloatArray).slice(),
+      explainedVariance: (this.explainedVariance_ as FloatArray).slice(),
+      explainedVarianceRatio: (this.explainedVarianceRatio_ as FloatArray).slice(),
+      singularValues: (this.singularValues_ as FloatArray).slice(),
+    };
+  }
+
+  /**
+   * Adopts a (validated) model's fields zero-copy and marks the estimator
+   * fitted. Callers own any defensive copying.
+   */
+  protected importBaseModel(m: PCAModelBaseFields): void {
+    this.dtype = m.dtype;
+    this.whitenOpt = m.whiten;
+    this.nComponents_ = m.nComponents;
+    this.nFeaturesIn_ = m.nFeaturesIn;
+    this.noiseVariance_ = m.noiseVariance;
+    this.components_ = new Matrix(m.components, m.nComponents, m.nFeaturesIn);
+    this.mean_ = m.mean;
+    this.explainedVariance_ = m.explainedVariance;
+    this.explainedVarianceRatio_ = m.explainedVarianceRatio;
+    this.singularValues_ = m.singularValues;
+    this.fitted = true;
   }
 }

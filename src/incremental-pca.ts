@@ -5,6 +5,7 @@
  */
 import { BasePCA, castTo } from './base.js';
 import { asMatrix, Matrix, type MatrixInput } from './matrix.js';
+import { assertValidModel, type IncrementalPCAModel } from './model.js';
 import { colMeans, incrementalMeanAndVar } from './numeric/stats.js';
 import { svd } from './numeric/svd.js';
 import { svdFlipVBased } from './numeric/svdflip.js';
@@ -280,6 +281,50 @@ export class IncrementalPCA extends BasePCA {
   async fitTransformAsync(X: MatrixInput, options: FitAsyncOptions = {}): Promise<Matrix> {
     await this.fitAsync(X, options);
     return this.transform(X);
+  }
+
+  // ------------------------------------------------------------------
+  // Model serialization
+  // ------------------------------------------------------------------
+
+  /**
+   * The fitted model as a plain structured-clone-friendly object. Includes
+   * the running statistics (`nSamplesSeen`, float64 mean/variance), so
+   * `partialFit` resumes bit-exactly after rehydration.
+   */
+  toModel(): IncrementalPCAModel {
+    const base = this.exportBaseModel();
+    return {
+      ...base,
+      estimator: 'ipca',
+      nSamplesSeen: this.nSamplesSeen_,
+      variance: (this.var_ as Float64Array).slice(),
+      batchSize: this.batchSize_,
+      options: {
+        nComponents: this.opts.nComponents,
+        whiten: this.opts.whiten,
+        copy: this.opts.copy,
+        batchSize: this.opts.batchSize,
+      },
+    };
+  }
+
+  /**
+   * Rehydrates a fitted IncrementalPCA from `toModel()` output (validated
+   * first; arrays adopted without copying). Further `partialFit` calls
+   * continue the stream exactly where the exported estimator left off.
+   */
+  static fromModel(model: IncrementalPCAModel): IncrementalPCA {
+    assertValidModel(model, 'ipca');
+    const ipca = new IncrementalPCA(model.options);
+    ipca.importBaseModel(model);
+    // mean_ and meanF64_ alias one array in live estimators; preserve that.
+    ipca.meanF64_ = model.mean as Float64Array;
+    ipca.var_ = model.variance;
+    ipca.nSamplesSeen_ = model.nSamplesSeen;
+    ipca.batchSize_ = model.batchSize;
+    ipca.hasComponentsAttr_ = true;
+    return ipca;
   }
 
   /** The whitening/update step; mutates `X`'s data (callers pass a copy unless copy=false). */

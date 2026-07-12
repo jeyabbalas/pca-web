@@ -9,6 +9,8 @@
  */
 
 export { asMatrix, Matrix, type MatrixInput } from '../matrix.js';
+export type { PCAModel, PCAModelOptions } from '../model.js';
+export { assertValidModel, modelFromJSON, modelToJSON } from '../model.js';
 export { PCA, type PCAOptions, type PowerIterationNormalizer, type SvdSolver } from '../pca.js';
 export type {
   FitAsyncOptions,
