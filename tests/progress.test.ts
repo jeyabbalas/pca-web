@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { IncrementalPCA } from '../src/incremental-pca.js';
 import { Matrix } from '../src/matrix.js';
 import { RandomState } from '../src/numeric/rng.js';
 import { PCA } from '../src/pca.js';
@@ -322,5 +323,74 @@ describe('observer semantics', () => {
     ).toThrow('first attempt dies');
     pca.fit(X);
     expect(pca.nComponents).toBe(3);
+  });
+});
+
+describe('IncrementalPCA progress', () => {
+  const X = gaussian(100, 8, 21);
+
+  it('emits one event per batch with linear fraction, then finalize', () => {
+    const { events, onProgress } = collect();
+    new IncrementalPCA({ nComponents: 3, batchSize: 25 }).fit(X, { onProgress });
+
+    const batches = events.filter((e) => e.phase === 'batch');
+    expect(batches).toHaveLength(4);
+    batches.forEach((e, i) => {
+      expect(e.estimator).toBe('IncrementalPCA');
+      expect(e.solver).toBe('incremental');
+      expect(e.step).toBe(i + 1);
+      expect(e.totalSteps).toBe(4);
+      expect(e.fraction).toBeCloseTo((i + 1) / 4, 15);
+    });
+    assertFractionMonotone(events);
+  });
+
+  it('batch-i snapshots bitwise-equal a partialFit prefix reference', () => {
+    const { events, onProgress } = collect();
+    new IncrementalPCA({ nComponents: 3, batchSize: 25 }).fit(X, {
+      onProgress,
+      snapshot: { components: true, scores: true },
+    });
+
+    const batches = events.filter((e) => e.phase === 'batch');
+    for (let i = 0; i < batches.length; i++) {
+      const end = 25 * (i + 1);
+      const ref = new IncrementalPCA({ nComponents: 3 });
+      for (let b = 0; b < i + 1; b++) {
+        const rows = new Matrix(X.data.slice(b * 25 * 8, (b + 1) * 25 * 8), 25, 8);
+        ref.partialFit(rows);
+      }
+      const snap = batches[i].snapshot;
+      expect(snap).toBeDefined();
+      if (!snap) {
+        continue;
+      }
+      expect(snap.components.data).toEqual(ref.components.data);
+      expect(snap.singularValues).toEqual(ref.singularValues);
+      const prefix = new Matrix(X.data.slice(0, end * 8), end, 8);
+      expect(snap.scores?.data).toEqual(ref.transform(prefix).data);
+    }
+    // finalize carries the full-data snapshot
+    const finalize = events[events.length - 1];
+    expect(finalize.snapshot?.scores?.rows).toBe(100);
+  });
+
+  it('re-entrant fit and concurrent partialFit throw', () => {
+    const ipca = new IncrementalPCA({ nComponents: 3, batchSize: 25 });
+    expect(() =>
+      ipca.fit(X, {
+        onProgress: () => {
+          ipca.partialFit(X);
+        },
+      }),
+    ).toThrow(/cannot run concurrently/);
+    const ipca2 = new IncrementalPCA({ nComponents: 3, batchSize: 25 });
+    expect(() =>
+      ipca2.fit(X, {
+        onProgress: () => {
+          ipca2.fit(X);
+        },
+      }),
+    ).toThrow(/already fitting/);
   });
 });

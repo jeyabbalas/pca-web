@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { IncrementalPCA } from '../src/incremental-pca.js';
 import { Matrix } from '../src/matrix.js';
 import { RandomState } from '../src/numeric/rng.js';
 import { PCA, type SvdSolver } from '../src/pca.js';
@@ -143,5 +144,35 @@ describe('event-loop liveness', () => {
       clearInterval(interval);
     }
     expect(ticks).toBeGreaterThan(0);
+  });
+});
+
+describe('IncrementalPCA fitAsync ≡ fit', () => {
+  for (const dtype of DTYPES) {
+    it(`bit-identical models (${dtype})`, async () => {
+      const X = gaussian(120, 10, 47, dtype);
+      const sync = new IncrementalPCA({ nComponents: 4, batchSize: 30 }).fit(X);
+      const async_ = await new IncrementalPCA({ nComponents: 4, batchSize: 30 }).fitAsync(X, {
+        budgetMs: 0,
+      });
+      expect(async_.components.data).toEqual(sync.components.data);
+      expect(async_.singularValues).toEqual(sync.singularValues);
+      expect(async_.explainedVariance).toEqual(sync.explainedVariance);
+      expect(async_.explainedVarianceRatio).toEqual(sync.explainedVarianceRatio);
+      expect(async_.mean).toEqual(sync.mean);
+      expect(async_.variance).toEqual(sync.variance);
+      expect(async_.nSamplesSeen).toBe(sync.nSamplesSeen);
+      expect(async_.noiseVariance).toBe(sync.noiseVariance);
+    });
+  }
+
+  it('fitTransformAsync ≡ fitTransform', async () => {
+    const X = gaussian(90, 12, 53);
+    const sync = new IncrementalPCA({ nComponents: 3, batchSize: 30 }).fitTransform(X);
+    const async_ = await new IncrementalPCA({ nComponents: 3, batchSize: 30 }).fitTransformAsync(
+      X,
+      { budgetMs: 0 },
+    );
+    expect(async_.data).toEqual(sync.data);
   });
 });

@@ -8,7 +8,16 @@ import { asMatrix, Matrix, type MatrixInput } from './matrix.js';
 import { colMeans, incrementalMeanAndVar } from './numeric/stats.js';
 import { svd } from './numeric/svd.js';
 import { svdFlipVBased } from './numeric/svdflip.js';
-import type { Dtype, FloatArray } from './types.js';
+import {
+  type FitAsyncOptions,
+  type FitObserver,
+  makeReporter,
+  type PCAFitSnapshot,
+  projectForSnapshot,
+  toFloat64Copy,
+} from './progress.js';
+import { driveAsync, driveSync } from './scheduling.js';
+import { type Dtype, dtypeOf, epsFor, type FloatArray } from './types.js';
 import { assertAllFinite, checkFeatureCount } from './validation.js';
 
 export interface IncrementalPCAOptions {
@@ -109,42 +118,141 @@ export class IncrementalPCA extends BasePCA {
   // ------------------------------------------------------------------
 
   /** Fit in minibatches of `batchSize` rows — sklearn's `IncrementalPCA.fit`. */
-  fit(X: MatrixInput): this {
-    // Reset all state, mirroring sklearn's fit().
-    this.components_ = null;
-    this.hasComponentsAttr_ = true; // sklearn sets self.components_ = None
-    this.nSamplesSeen_ = 0;
-    this.meanF64_ = null;
-    this.var_ = null;
-    this.singularValues_ = null;
-    this.explainedVariance_ = null;
-    this.explainedVarianceRatio_ = null;
-    this.noiseVariance_ = 0;
-    this.fitted = false;
+  fit(X: MatrixInput, observer?: FitObserver): this {
+    driveSync(this._fitSteps(asMatrix(X), observer), observer?.signal);
+    return this;
+  }
 
-    const xm = asMatrix(X);
-    assertAllFinite(xm, 'IncrementalPCA.fit');
-    if (xm.rows < 1 || xm.cols < 1) {
+  /**
+   * Non-blocking fit: identical batching, time-sliced on the event loop.
+   * Results are bit-identical to the synchronous fit. An abort between
+   * batches keeps the completed-batch model (the estimator stays usable).
+   */
+  async fitAsync(X: MatrixInput, options: FitAsyncOptions = {}): Promise<this> {
+    await driveAsync(this._fitSteps(asMatrix(X), options), {
+      budgetMs: options.budgetMs,
+      signal: options.signal,
+    });
+    return this;
+  }
+
+  /**
+   * @internal The batched fit as a step generator — one `yield` per batch
+   * is the suspension/abort checkpoint for the drivers. Mirrors sklearn's
+   * fit(): state is reset before validation, and each batch runs the
+   * unchanged partialFit update.
+   */
+  *_fitSteps(X: Matrix, observer?: FitObserver): Generator<void, void, void> {
+    if (this.fitting) {
       throw new Error(
-        `Found array with shape (${xm.rows}, ${xm.cols}); at least 1 sample and 1 feature required`,
+        'This IncrementalPCA instance is already fitting; concurrent fits on one instance are not supported',
       );
     }
-    const work = this.opts.copy ? xm.copy() : xm;
-    const n = work.rows;
-    const p = work.cols;
-    this.nFeaturesIn_ = p;
-    this.batchSize_ = this.opts.batchSize ?? 5 * p;
+    this.fitting = true;
+    try {
+      // Reset all state, mirroring sklearn's fit().
+      this.components_ = null;
+      this.hasComponentsAttr_ = true; // sklearn sets self.components_ = None
+      this.nSamplesSeen_ = 0;
+      this.meanF64_ = null;
+      this.var_ = null;
+      this.singularValues_ = null;
+      this.explainedVariance_ = null;
+      this.explainedVarianceRatio_ = null;
+      this.noiseVariance_ = 0;
+      this.fitted = false;
 
-    for (const [start, end] of genBatches(n, this.batchSize_, this.opts.nComponents ?? 0)) {
-      const rows = end - start;
-      const batch = new Matrix(work.data.subarray(start * p, end * p), rows, p);
-      this.partialFitCore(batch);
+      assertAllFinite(X, 'IncrementalPCA.fit');
+      if (X.rows < 1 || X.cols < 1) {
+        throw new Error(
+          `Found array with shape (${X.rows}, ${X.cols}); at least 1 sample and 1 feature required`,
+        );
+      }
+      const work = this.opts.copy ? X.copy() : X;
+      const n = work.rows;
+      const p = work.cols;
+      this.nFeaturesIn_ = p;
+      this.batchSize_ = this.opts.batchSize ?? 5 * p;
+
+      // Materialized so totalSteps is known up front.
+      const batches = [...genBatches(n, this.batchSize_, this.opts.nComponents ?? 0)];
+      const reporter = makeReporter(observer, {
+        estimator: 'IncrementalPCA',
+        solver: 'incremental',
+        nRows: n,
+        whiten: this.opts.whiten,
+      });
+      for (let i = 0; i < batches.length; i++) {
+        const [start, end] = batches[i];
+        const rows = end - start;
+        const batch = new Matrix(work.data.subarray(start * p, end * p), rows, p);
+        this.partialFitCore(batch);
+        if (reporter) {
+          reporter.emit({
+            phase: 'batch',
+            step: i + 1,
+            totalSteps: batches.length,
+            snapshot: reporter.wantSnapshot(i + 1)
+              ? this.batchSnapshot(X, end, reporter.scoresRequested)
+              : undefined,
+          });
+        }
+        yield;
+      }
+      if (reporter) {
+        reporter.emit({
+          phase: 'finalize',
+          step: batches.length,
+          totalSteps: batches.length,
+          snapshot: reporter.snapshotsEnabled
+            ? this.batchSnapshot(X, n, reporter.scoresRequested)
+            : undefined,
+        });
+      }
+    } finally {
+      this.fitting = false;
     }
-    return this;
+  }
+
+  /**
+   * Snapshot of the just-stored (batch-prefix) model, as fresh float64
+   * copies. Scores project the original input's rows seen so far; with
+   * `copy: false` the first batch's rows were destructively centered by
+   * the update (sklearn's contract), making those scores approximate.
+   */
+  private batchSnapshot(X: Matrix, rowsSeen: number, wantScores: boolean): PCAFitSnapshot {
+    const comp = this.components_ as Matrix;
+    const k = comp.rows;
+    const p = comp.cols;
+    const snapshot: PCAFitSnapshot = {
+      components: new Matrix(toFloat64Copy(comp.data), k, p),
+      singularValues: toFloat64Copy(this.singularValues_ as FloatArray),
+      explainedVariance: toFloat64Copy(this.explainedVariance_ as FloatArray),
+    };
+    if (wantScores) {
+      const ev = this.explainedVariance_ as FloatArray;
+      snapshot.scores = projectForSnapshot(
+        X.data,
+        rowsSeen,
+        p,
+        comp.data,
+        k,
+        this.mean_ as FloatArray,
+        ev,
+        this.whitenOpt,
+        epsFor(dtypeOf(ev)),
+      );
+    }
+    return snapshot;
   }
 
   /** Incremental fit on one batch — sklearn's `partial_fit`. All of X is one batch. */
   partialFit(X: MatrixInput): this {
+    if (this.fitting) {
+      throw new Error(
+        'This IncrementalPCA instance is fitting; partialFit cannot run concurrently with fit',
+      );
+    }
     const xm = asMatrix(X);
     assertAllFinite(xm, 'IncrementalPCA.partialFit');
     if (xm.rows < 1 || xm.cols < 1) {
@@ -163,8 +271,14 @@ export class IncrementalPCA extends BasePCA {
   }
 
   /** Equivalent to fit(X).transform(X) (sklearn's TransformerMixin behavior). */
-  fitTransform(X: MatrixInput): Matrix {
-    this.fit(X);
+  fitTransform(X: MatrixInput, observer?: FitObserver): Matrix {
+    this.fit(X, observer);
+    return this.transform(X);
+  }
+
+  /** Non-blocking fitTransform — fitAsync followed by transform. */
+  async fitTransformAsync(X: MatrixInput, options: FitAsyncOptions = {}): Promise<Matrix> {
+    await this.fitAsync(X, options);
     return this.transform(X);
   }
 

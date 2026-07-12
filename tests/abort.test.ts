@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { IncrementalPCA } from '../src/incremental-pca.js';
 import { Matrix } from '../src/matrix.js';
 import { RandomState } from '../src/numeric/rng.js';
 import { PCA } from '../src/pca.js';
@@ -144,5 +145,50 @@ describe('sync fit abort', () => {
     } catch (err) {
       expect((err as Error).name).toBe('AbortError');
     }
+  });
+});
+
+describe('IncrementalPCA abort', () => {
+  it('abort after batch 2 of 5 keeps the 2-batch model', async () => {
+    const Xi = gaussian(100, 8, 19);
+    const controller = new AbortController();
+    const ipca = new IncrementalPCA({ nComponents: 3, batchSize: 20 });
+    await expect(
+      ipca.fitAsync(Xi, {
+        budgetMs: 0,
+        signal: controller.signal,
+        onProgress: (e) => {
+          if (e.phase === 'batch' && e.step === 2) {
+            controller.abort();
+          }
+        },
+      }),
+    ).rejects.toMatchObject({ name: 'AbortError' });
+
+    // The estimator holds exactly the model of the first two batches.
+    const ref = new IncrementalPCA({ nComponents: 3 });
+    ref.partialFit(new Matrix(Xi.data.slice(0, 20 * 8), 20, 8));
+    ref.partialFit(new Matrix(Xi.data.slice(20 * 8, 40 * 8), 20, 8));
+    expect(ipca.nSamplesSeen).toBe(40);
+    expect(ipca.components.data).toEqual(ref.components.data);
+    expect(ipca.singularValues).toEqual(ref.singularValues);
+
+    // partialFit can resume from the kept model.
+    ipca.partialFit(new Matrix(Xi.data.slice(40 * 8, 60 * 8), 20, 8));
+    expect(ipca.nSamplesSeen).toBe(60);
+  });
+
+  it('a pre-aborted signal leaves a previously fitted model reset (sklearn fit() resets first)', async () => {
+    const Xi = gaussian(60, 6, 29);
+    const ipca = new IncrementalPCA({ nComponents: 2, batchSize: 30 });
+    ipca.fit(Xi);
+    const controller = new AbortController();
+    controller.abort();
+    await expect(ipca.fitAsync(Xi, { signal: controller.signal })).rejects.toMatchObject({
+      name: 'AbortError',
+    });
+    // The abort landed before the first step: reset did not run either,
+    // so the previous model is intact (same rule as PCA).
+    expect(ipca.nSamplesSeen).toBe(60);
   });
 });
