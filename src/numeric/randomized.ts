@@ -93,6 +93,61 @@ export function* randomizedSvdSteps(
     return m_;
   };
 
+  /**
+   * Finishes a decomposition from a range basis: orthonormalize, form
+   * B = QᵀAeff, small SVD, truncate to k, undo the transpose — exactly like
+   * sklearn. Shared verbatim by the final path and mid-fit snapshots, so
+   * the two cannot drift. Reads `basis` only (qrEconomic copies), draws no
+   * RNG, and returns fresh arrays.
+   */
+  function* finishFromBasis(
+    basis: Float64Array,
+    basisWidth: number,
+  ): Generator<BigGemmRequest, SvdResult, Float64Array> {
+    // Orthonormal basis of the sampled range.
+    const proj = yield mulAeff(basis, basisWidth); // effRows × basisWidth
+    const qFinal = qrEconomic(proj, effRows, basisWidth).q;
+    const qCols = Math.min(effRows, basisWidth);
+
+    // B = Qᵀ Aeff (qCols × effCols), then SVD of the small B.
+    let b: Float64Array;
+    if (transposed) {
+      // B = Qᵀ Aᵀ = (A Q)ᵀ.
+      const aq = yield { op: 'mulA', b: qFinal, w: qCols };
+      b = transpose(aq, rows, qCols);
+    } else {
+      b = yield { op: 'mulTA', b: qFinal, w: qCols };
+    }
+    const { u: uhat, s, vt } = svd(b, qCols, effCols);
+    const nu = Math.min(qCols, effCols);
+    const uFull = matmul(qFinal, uhat, effRows, qCols, nu); // effRows × nu
+
+    // Truncate to k and undo the transpose, exactly like sklearn.
+    if (!transposed) {
+      const u = new Float64Array(rows * k);
+      for (let i = 0; i < rows; i++) {
+        for (let c = 0; c < k; c++) {
+          u[i * k + c] = uFull[i * nu + c];
+        }
+      }
+      return { u, s: s.slice(0, k), vt: vt.slice(0, k * effCols) };
+    }
+    // A = (Aeff)ᵀ = V Σ Uᵀ: U_A = Vt[:k].T (rows×k), Vt_A = (U[:, :k])ᵀ (k×cols).
+    const uA = new Float64Array(rows * k);
+    for (let i = 0; i < rows; i++) {
+      for (let c = 0; c < k; c++) {
+        uA[i * k + c] = vt[c * effCols + i];
+      }
+    }
+    const vtA = new Float64Array(k * cols);
+    for (let c = 0; c < k; c++) {
+      for (let i = 0; i < cols; i++) {
+        vtA[c * cols + i] = uFull[i * nu + c];
+      }
+    }
+    return { u: uA, s: s.slice(0, k), vt: vtA };
+  }
+
   // Power iterations imprint the top singular vectors of Aeff onto Q.
   for (let it = 0; it < nIter; it++) {
     let t: Float64Array = yield mulAeff(q, qWidth); // effRows × qWidth
@@ -103,48 +158,7 @@ export function* randomizedSvdSteps(
     qWidth = normalizer === 'none' ? tWidth : Math.min(effCols, tWidth);
   }
 
-  // Orthonormal basis of the sampled range.
-  const proj = yield mulAeff(q, qWidth); // effRows × qWidth
-  const qFinal = qrEconomic(proj, effRows, qWidth).q;
-  const qCols = Math.min(effRows, qWidth);
-
-  // B = Qᵀ Aeff (qCols × effCols), then SVD of the small B.
-  let b: Float64Array;
-  if (transposed) {
-    // B = Qᵀ Aᵀ = (A Q)ᵀ.
-    const aq = yield { op: 'mulA', b: qFinal, w: qCols };
-    b = transpose(aq, rows, qCols);
-  } else {
-    b = yield { op: 'mulTA', b: qFinal, w: qCols };
-  }
-  const { u: uhat, s, vt } = svd(b, qCols, effCols);
-  const nu = Math.min(qCols, effCols);
-  const uFull = matmul(qFinal, uhat, effRows, qCols, nu); // effRows × nu
-
-  // Truncate to k and undo the transpose, exactly like sklearn.
-  if (!transposed) {
-    const u = new Float64Array(rows * k);
-    for (let i = 0; i < rows; i++) {
-      for (let c = 0; c < k; c++) {
-        u[i * k + c] = uFull[i * nu + c];
-      }
-    }
-    return { u, s: s.slice(0, k), vt: vt.slice(0, k * effCols) };
-  }
-  // A = (Aeff)ᵀ = V Σ Uᵀ: U_A = Vt[:k].T (rows×k), Vt_A = (U[:, :k])ᵀ (k×cols).
-  const uA = new Float64Array(rows * k);
-  for (let i = 0; i < rows; i++) {
-    for (let c = 0; c < k; c++) {
-      uA[i * k + c] = vt[c * effCols + i];
-    }
-  }
-  const vtA = new Float64Array(k * cols);
-  for (let c = 0; c < k; c++) {
-    for (let i = 0; i < cols; i++) {
-      vtA[c * cols + i] = uFull[i * nu + c];
-    }
-  }
-  return { u: uA, s: s.slice(0, k), vt: vtA };
+  return yield* finishFromBasis(q, qWidth);
 }
 
 /** Computes one A-product request on the CPU BLAS. */

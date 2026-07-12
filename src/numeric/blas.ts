@@ -80,12 +80,19 @@ export function matmulTransB(
 }
 
 /**
- * Symmetric rank-k update: C (p×p) = Aᵀ @ A for A (n×p). Computes the upper
- * triangle and mirrors it, halving the flops vs a generic matmul.
+ * One row range of the symmetric rank-k update: accumulates rows
+ * [rowStart, rowEnd) of A (·×p) into the upper triangle of `c` (p×p).
+ * Accumulation is strictly row-sequential, so chunked calls over
+ * consecutive ranges produce bitwise the same result as one full pass.
  */
-export function syrkT(a: FloatArray, n: number, p: number): Float64Array {
-  const c = new Float64Array(p * p);
-  for (let r = 0; r < n; r++) {
+export function syrkTChunk(
+  a: FloatArray,
+  p: number,
+  rowStart: number,
+  rowEnd: number,
+  c: Float64Array,
+): void {
+  for (let r = rowStart; r < rowEnd; r++) {
     const off = r * p;
     for (let i = 0; i < p; i++) {
       const av = a[off + i];
@@ -97,11 +104,25 @@ export function syrkT(a: FloatArray, n: number, p: number): Float64Array {
       }
     }
   }
+}
+
+/** Mirrors the upper triangle of `c` (p×p) into the lower triangle. */
+export function syrkTMirror(c: Float64Array, p: number): void {
   for (let i = 0; i < p; i++) {
     for (let j = i + 1; j < p; j++) {
       c[j * p + i] = c[i * p + j];
     }
   }
+}
+
+/**
+ * Symmetric rank-k update: C (p×p) = Aᵀ @ A for A (n×p). Computes the upper
+ * triangle and mirrors it, halving the flops vs a generic matmul.
+ */
+export function syrkT(a: FloatArray, n: number, p: number): Float64Array {
+  const c = new Float64Array(p * p);
+  syrkTChunk(a, p, 0, n, c);
+  syrkTMirror(c, p);
   return c;
 }
 

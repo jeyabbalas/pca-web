@@ -67,18 +67,19 @@ function randomOrthogonal(
 }
 
 /**
- * Top-k singular triplets of `a` (m×n). `v0` seeds the start vector (length
- * min(m,n), like scipy's svds); the converged result does not depend on it.
- * Requires 1 <= k < min(m, n) (ARPACK's constraint, enforced by the caller).
+ * Top-k singular triplets of `a` (m×n) as a step generator: yields `void`
+ * at the top of every Lanczos iteration — the suspension/abort checkpoints
+ * used by the async drivers. Numerically identical to draining it in one go
+ * (`lanczosSvd` below).
  */
-export function lanczosSvd(
+export function* lanczosSvdSteps(
   a: FloatArray,
   m: number,
   n: number,
   k: number,
   v0: Float64Array,
   rng: RandomState,
-): SvdResult {
+): Generator<void, SvdResult, void> {
   // Run the recurrence with the v-side on the smaller dimension, mirroring
   // scipy operating on the smaller Gram operator.
   const wide = m < n;
@@ -109,6 +110,7 @@ export function lanczosSvd(
   let result: SvdResult | null = null;
 
   for (let j = 0; j < jmax; j++) {
+    yield;
     // u_j = A v_j - beta_{j-1} u_{j-1}
     const u = mulA(V[j]);
     if (j > 0) {
@@ -186,7 +188,32 @@ export function lanczosSvd(
   if (!wide) {
     return result;
   }
-  // We decomposed Aᵀ; swap sides back: A = V_op Σ U_opᵀ.
+  return untransposeResult(result, m, n, k);
+}
+
+/**
+ * Top-k singular triplets of `a` (m×n). `v0` seeds the start vector (length
+ * min(m,n), like scipy's svds); the converged result does not depend on it.
+ * Requires 1 <= k < min(m, n) (ARPACK's constraint, enforced by the caller).
+ */
+export function lanczosSvd(
+  a: FloatArray,
+  m: number,
+  n: number,
+  k: number,
+  v0: Float64Array,
+  rng: RandomState,
+): SvdResult {
+  const gen = lanczosSvdSteps(a, m, n, k, v0, rng);
+  let step = gen.next();
+  while (!step.done) {
+    step = gen.next();
+  }
+  return step.value;
+}
+
+/** We decomposed Aᵀ; swap sides back: A = V_op Σ U_opᵀ. */
+function untransposeResult(result: SvdResult, m: number, n: number, k: number): SvdResult {
   const { u: uOp, s, vt: vtOp } = result;
   const uA = new Float64Array(m * k);
   for (let i = 0; i < m; i++) {
@@ -203,27 +230,19 @@ export function lanczosSvd(
   return { u: uA, s, vt: vtA };
 }
 
-/**
- * Builds the bidiagonal B from (alphas, betas), takes its SVD, and returns
- * the top-k Ritz triplets if they are converged (residual = betaNext ·
- * |last row of P|), or unconditionally when `force` is set.
- */
-function tryFinish(
-  U: Float64Array[],
-  V: Float64Array[],
-  alphas: number[],
-  betas: number[],
-  betaNext: number,
-  k: number,
-  rows: number,
-  cols: number,
-  force: boolean,
-): SvdResult | null {
+/** SVD of the upper bidiagonal B (J×J): diag = alphas, superdiag = betas. */
+interface BidiagSvd {
+  /** Left singular vectors of B, J×J. */
+  p: Float64Array;
+  /** Singular values, length J, descending. */
+  s: Float64Array;
+  /** Right singular vectors transposed, J×J. */
+  qt: Float64Array;
+  j: number;
+}
+
+function smallSvdOfB(alphas: number[], betas: number[]): BidiagSvd {
   const J = alphas.length;
-  if (J < k) {
-    return null;
-  }
-  // Upper bidiagonal B (J×J): diag = alphas, superdiag = betas.
   const B = new Float64Array(J * J);
   for (let i = 0; i < J; i++) {
     B[i * J + i] = alphas[i];
@@ -231,17 +250,33 @@ function tryFinish(
       B[i * J + i + 1] = betas[i];
     }
   }
-  const { u: P, s, vt: Qt } = svd(B, J, J);
-  const smax = s[0] > 0 ? s[0] : 1;
-  if (!force) {
-    for (let i = 0; i < k; i++) {
-      const residual = Math.abs(betaNext * P[(J - 1) * J + i]);
-      if (residual > 1e-13 * smax) {
-        return null;
-      }
+  const { u: p, s, vt: qt } = svd(B, J, J);
+  return { p, s, qt, j: J };
+}
+
+/** Largest residual estimate |betaNext · P[J−1, i]| over the top-k triplets. */
+function maxTopKResidual(dec: BidiagSvd, betaNext: number, k: number): number {
+  const J = dec.j;
+  let worst = 0;
+  for (let i = 0; i < k; i++) {
+    const residual = Math.abs(betaNext * dec.p[(J - 1) * J + i]);
+    if (residual > worst) {
+      worst = residual;
     }
   }
+  return worst;
+}
 
+/** Ritz triplets from the current basis: uOut = U·P[:, :k], vtOut = Qt[:k]·V. */
+function assembleTriplets(
+  dec: BidiagSvd,
+  U: Float64Array[],
+  V: Float64Array[],
+  k: number,
+  rows: number,
+  cols: number,
+): SvdResult {
+  const { p: P, s, qt: Qt, j: J } = dec;
   // uOut (rows×k) = U_mat @ P[:, :k]; U_mat columns are the U basis vectors.
   const uOut = new Float64Array(rows * k);
   for (let j = 0; j < J; j++) {
@@ -270,4 +305,34 @@ function tryFinish(
     }
   }
   return { u: uOut, s: s.slice(0, k), vt: vtOut };
+}
+
+/**
+ * Builds the bidiagonal B from (alphas, betas), takes its SVD, and returns
+ * the top-k Ritz triplets if they are converged (residual = betaNext ·
+ * |last row of P|), or unconditionally when `force` is set.
+ */
+function tryFinish(
+  U: Float64Array[],
+  V: Float64Array[],
+  alphas: number[],
+  betas: number[],
+  betaNext: number,
+  k: number,
+  rows: number,
+  cols: number,
+  force: boolean,
+): SvdResult | null {
+  const J = alphas.length;
+  if (J < k) {
+    return null;
+  }
+  const dec = smallSvdOfB(alphas, betas);
+  if (!force) {
+    const smax = dec.s[0] > 0 ? dec.s[0] : 1;
+    if (maxTopKResidual(dec, betaNext, k) > 1e-13 * smax) {
+      return null;
+    }
+  }
+  return assembleTriplets(dec, U, V, k, rows, cols);
 }

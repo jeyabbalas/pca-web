@@ -1,7 +1,9 @@
-import { describe, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
+import { syrkT, syrkTChunk, syrkTMirror } from '../src/numeric/blas.js';
 import { eigh } from '../src/numeric/eigh.js';
 import { inverse, luFactor, permutedL, slogdet } from '../src/numeric/lu.js';
 import { qrEconomic } from '../src/numeric/qr.js';
+import { RandomState } from '../src/numeric/rng.js';
 import { svd } from '../src/numeric/svd.js';
 import { assertClose, assertScalarClose } from './helpers/compare.js';
 import { getArray, loadSuite, num } from './helpers/fixtures.js';
@@ -77,4 +79,32 @@ describe('numeric kernels vs numpy/scipy fixtures', () => {
       }
     });
   }
+});
+
+describe('syrkTChunk', () => {
+  it('chunked accumulation is bitwise identical to one syrkT pass over arbitrary splits', () => {
+    const rng = new RandomState(42);
+    for (const [n, p] of [
+      [17, 5],
+      [64, 8],
+      [100, 13],
+    ] as const) {
+      const a = new Float64Array(n * p);
+      rng.standardNormal(a);
+      const whole = syrkT(a, n, p);
+      for (const splits of [
+        [0, n],
+        [0, 1, n],
+        [0, 7, 7, n],
+        [0, 3, 11, n - 1, n],
+      ]) {
+        const c = new Float64Array(p * p);
+        for (let s = 0; s + 1 < splits.length; s++) {
+          syrkTChunk(a, p, splits[s], splits[s + 1], c);
+        }
+        syrkTMirror(c, p);
+        expect(c).toEqual(whole);
+      }
+    }
+  });
 });
