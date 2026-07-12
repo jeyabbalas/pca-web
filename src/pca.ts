@@ -31,7 +31,7 @@ import {
 } from './progress.js';
 import { driveAsync, driveSync } from './scheduling.js';
 import { dtypeOf, epsFor, type FloatArray } from './types.js';
-import { assertAllFinite, checkFeatureCount } from './validation.js';
+import { assertAllFinite, assertMinSamplesForFit, checkFeatureCount } from './validation.js';
 
 export type SvdSolver = 'auto' | 'full' | 'covariance_eigh' | 'arpack' | 'randomized';
 export type PowerIterationNormalizer = 'auto' | 'QR' | 'LU' | 'none';
@@ -232,6 +232,7 @@ export class PCA extends BasePCA {
   // Fitting
   // ------------------------------------------------------------------
 
+  /** Fit the model on X — sklearn's `fit`. X must have at least 2 samples. */
   fit(X: MatrixInput, observer?: FitObserver): this {
     driveSync(this._fitSteps(asMatrix(X), observer), observer?.signal);
     return this;
@@ -314,6 +315,7 @@ export class PCA extends BasePCA {
         `Found array with shape (${X.rows}, ${X.cols}); PCA requires at least 1 sample and 1 feature`,
       );
     }
+    assertMinSamplesForFit(X, 'PCA');
     assertAllFinite(X, 'PCA.fit');
     this.fitting = true;
     let completed = false;
@@ -618,6 +620,7 @@ export class PCA extends BasePCA {
         `Found array with shape (${X.rows}, ${X.cols}); PCA requires at least 1 sample and 1 feature`,
       );
     }
+    assertMinSamplesForFit(X, 'PCA');
     assertAllFinite(X, 'PCA.fit');
     this.dtype = X.dtype;
     this.fitSvdSolver_ = solver;

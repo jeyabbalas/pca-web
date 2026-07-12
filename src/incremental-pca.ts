@@ -19,7 +19,7 @@ import {
 } from './progress.js';
 import { driveAsync, driveSync } from './scheduling.js';
 import { type Dtype, dtypeOf, epsFor, type FloatArray } from './types.js';
-import { assertAllFinite, checkFeatureCount } from './validation.js';
+import { assertAllFinite, assertMinSamplesForFit, checkFeatureCount } from './validation.js';
 
 export interface IncrementalPCAOptions {
   /** Number of components to keep (integer ≥ 1), or null to use min(batch shape). */
@@ -118,7 +118,10 @@ export class IncrementalPCA extends BasePCA {
   // Fitting
   // ------------------------------------------------------------------
 
-  /** Fit in minibatches of `batchSize` rows — sklearn's `IncrementalPCA.fit`. */
+  /**
+   * Fit in minibatches of `batchSize` rows — sklearn's `IncrementalPCA.fit`.
+   * The first batch must have at least 2 samples.
+   */
   fit(X: MatrixInput, observer?: FitObserver): this {
     driveSync(this._fitSteps(asMatrix(X), observer), observer?.signal);
     return this;
@@ -247,7 +250,11 @@ export class IncrementalPCA extends BasePCA {
     return snapshot;
   }
 
-  /** Incremental fit on one batch — sklearn's `partial_fit`. All of X is one batch. */
+  /**
+   * Incremental fit on one batch — sklearn's `partial_fit`. All of X is one
+   * batch. The first call must see at least 2 samples; later calls may
+   * stream batches of any size (including single rows).
+   */
   partialFit(X: MatrixInput): this {
     if (this.fitting) {
       throw new Error(
@@ -329,6 +336,11 @@ export class IncrementalPCA extends BasePCA {
 
   /** The whitening/update step; mutates `X`'s data (callers pass a copy unless copy=false). */
   private partialFitCore(X: Matrix): void {
+    // Only the very first batch of data needs 2+ samples (it seeds the
+    // variance estimate); later 1-row updates are well-defined.
+    if (this.nSamplesSeen_ === 0) {
+      assertMinSamplesForFit(X, this.estimatorName);
+    }
     const firstPass = !this.hasComponentsAttr_;
     if (firstPass) {
       this.components_ = null;

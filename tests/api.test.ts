@@ -241,3 +241,80 @@ describe('IncrementalPCA API behavior', () => {
     ]);
   });
 });
+
+describe('minimum-sample validation', () => {
+  // Deliberate deviation from sklearn, which allows n=1 and produces an
+  // all-NaN model alongside a Python RuntimeWarning (or a scipy crash for
+  // covariance_eigh) — there is no warning channel in JS.
+  const SOLVERS = ['full', 'covariance_eigh', 'arpack', 'randomized'] as const;
+
+  it('rejects single-sample fits with every solver, before solver-specific checks', () => {
+    const one = demoData(1, 5);
+    for (const svdSolver of SOLVERS) {
+      expect(() => new PCA({ nComponents: 1, svdSolver, randomState: 0 }).fit(one)).toThrow(
+        /minimum of 2 is required by PCA/,
+      );
+    }
+    expect(() => new PCA().fit(one)).toThrow(/1 sample\(s\) \(shape=\(1, 5\)\)/);
+  });
+
+  it('rejects single-sample fits from the async driver too', async () => {
+    await expect(new PCA().fitAsync(demoData(1, 3))).rejects.toThrow(/minimum of 2/);
+    await expect(new PCA().fitTransformAsync(demoData(1, 3))).rejects.toThrow(/minimum of 2/);
+  });
+
+  it('leaves the previous model intact when a single-sample refit is rejected', () => {
+    const pca = new PCA({ nComponents: 2 }).fit(demoData());
+    const comps = pca.components.data.slice();
+    expect(() => pca.fit(demoData(1, 6))).toThrow(/minimum of 2/);
+    expect(pca.components.data).toEqual(comps);
+  });
+
+  it('rejects a single-sample first batch for IncrementalPCA (fit, partialFit, batchSize=1)', () => {
+    expect(() => new IncrementalPCA().fit(demoData(1, 4))).toThrow(
+      /minimum of 2 is required by IncrementalPCA/,
+    );
+    expect(() => new IncrementalPCA().partialFit(demoData(1, 4))).toThrow(/minimum of 2/);
+    // batchSize=1 would seed the running statistics from a 1-row batch
+    expect(() => new IncrementalPCA({ batchSize: 1 }).fit(demoData(10, 4))).toThrow(/minimum of 2/);
+  });
+
+  it('accepts single-row partialFit batches after the first (sklearn parity)', () => {
+    const ipca = new IncrementalPCA({ nComponents: 2 });
+    ipca.partialFit(demoData(10, 4, 1));
+    ipca.partialFit(new Matrix(demoData(3, 4, 2).row(0), 1, 4));
+    expect(ipca.nSamplesSeen).toBe(11);
+    expect(Number.isFinite(ipca.explainedVariance[0])).toBe(true);
+    expect(Number.isFinite(ipca.explainedVarianceRatio[0])).toBe(true);
+  });
+
+  it('still transforms and scores single rows after a valid fit', () => {
+    const pca = new PCA({ nComponents: 2 }).fit(demoData());
+    const row = new Matrix(demoData().row(0), 1, 6);
+    expect(pca.transform(row).rows).toBe(1);
+    expect(pca.scoreSamples(row).length).toBe(1);
+    expect(pca.inverseTransform(pca.transform(row)).rows).toBe(1);
+  });
+});
+
+describe('zero-variance (all-constant) data', () => {
+  it('produces a well-formed model whose explainedVarianceRatio is NaN (sklearn parity)', () => {
+    const constant = new Matrix(new Float64Array(5 * 3).fill(7), 5, 3);
+    for (const svdSolver of ['full', 'covariance_eigh'] as const) {
+      const pca = new PCA({ svdSolver }).fit(constant);
+      for (const s of pca.singularValues) {
+        expect(Math.abs(s)).toBeLessThan(1e-12);
+      }
+      // total variance is 0, so the ratio is 0/0 — NaN, exactly as sklearn
+      for (const r of pca.explainedVarianceRatio) {
+        expect(Number.isNaN(r)).toBe(true);
+      }
+      // the embedding of the training data is the zero matrix
+      const scores = pca.transform(constant);
+      expect(scores.rows).toBe(5);
+      for (const v of scores.data) {
+        expect(Math.abs(v)).toBeLessThan(1e-12);
+      }
+    }
+  });
+});

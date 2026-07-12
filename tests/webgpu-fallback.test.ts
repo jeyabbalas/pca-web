@@ -22,6 +22,12 @@ describe('WebGPUPCA in a WebGPU-less environment', () => {
     expect(WebGPUPCA.isSupported()).toBe(false);
   });
 
+  it('rejects single-sample fits like the CPU class', async () => {
+    await expect(new WebGPUPCA({ nComponents: 1 }).fit(demoData(1, 5, 3))).rejects.toThrow(
+      /minimum of 2 is required by PCA/,
+    );
+  });
+
   it('falls back to the CPU with bit-identical results (randomized)', async () => {
     const X = demoData(600, 500, 42); // large enough to want the GPU
     const opts = { nComponents: 8, svdSolver: 'randomized' as const, randomState: 0 };

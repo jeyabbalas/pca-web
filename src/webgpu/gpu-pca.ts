@@ -31,7 +31,7 @@ import {
 import { type FitAsyncOptions, makeReporter } from '../progress.js';
 import { throwIfAborted } from '../scheduling.js';
 import type { FloatArray } from '../types.js';
-import { assertAllFinite, checkFeatureCount } from '../validation.js';
+import { assertAllFinite, assertMinSamplesForFit, checkFeatureCount } from '../validation.js';
 import { GpuEngine, isWebGPUSupported, type WebGPUDeviceOptions } from './engine.js';
 
 export interface WebGPUPCAOptions extends PCAOptions, WebGPUDeviceOptions {
@@ -190,6 +190,7 @@ export class WebGPUPCA {
         `Found array with shape (${xm.rows}, ${xm.cols}); PCA requires at least 1 sample and 1 feature`,
       );
     }
+    assertMinSamplesForFit(xm, 'PCA');
     assertAllFinite(xm, 'PCA.fit');
     const o = this.cpu._resolvedOptions();
     const solver = resolveSvdSolver(xm.rows, xm.cols, o.nComponents, o.svdSolver);

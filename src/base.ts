@@ -59,7 +59,11 @@ export abstract class BasePCA {
     return this.explainedVariance_ as FloatArray;
   }
 
-  /** sklearn's `explained_variance_ratio_`. */
+  /**
+   * sklearn's `explained_variance_ratio_`. For zero-variance (all-constant)
+   * training data the total variance is 0, so every entry is NaN — the same
+   * 0/0 sklearn produces (alongside a RuntimeWarning) in that case.
+   */
   get explainedVarianceRatio(): FloatArray {
     this.assertFitted();
     return this.explainedVarianceRatio_ as FloatArray;
