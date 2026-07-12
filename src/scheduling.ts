@@ -50,20 +50,25 @@ const GLOBALS = globalThis as SchedulingGlobals;
 
 let yieldImpl: (() => Promise<void>) | null = null;
 
-/** Picks the best macrotask-yield mechanism available — once, lazily. */
+/**
+ * Picks the best macrotask-yield mechanism available — once, lazily.
+ *
+ * Deliberately NOT `scheduler.yield()`: its continuation resumes at a
+ * priority above pending message events, so a slicing loop built on it
+ * starves incoming `postMessage` traffic — abort requests sent to a busy
+ * worker would only be seen after the fit finished. A MessageChannel
+ * round-trip queues behind already-arrived messages (same task source,
+ * FIFO), which is exactly the fairness cancellation needs, and it is not
+ * subject to setTimeout's >=4ms nesting clamp.
+ */
 function pickYieldImpl(): () => Promise<void> {
-  const scheduler = GLOBALS.scheduler;
-  if (scheduler && typeof scheduler.yield === 'function') {
-    const schedulerYield = scheduler.yield.bind(scheduler);
-    return () => schedulerYield();
-  }
   if (typeof GLOBALS.setImmediate === 'function') {
+    // Node: cheaper than a channel and fair with worker_threads messages.
     const setImmediateFn = GLOBALS.setImmediate;
     return () => new Promise((resolve) => setImmediateFn(resolve));
   }
   if (typeof GLOBALS.MessageChannel === 'function') {
     // One long-lived channel; each posted message wakes one waiter (FIFO).
-    // Unlike setTimeout(0), this is not throttled to >=4ms by browsers.
     const channel = new GLOBALS.MessageChannel();
     const waiters: Array<() => void> = [];
     channel.port1.onmessage = () => {
@@ -85,7 +90,7 @@ function pickYieldImpl(): () => Promise<void> {
 
 /**
  * Resolves in a later macrotask, giving the host a chance to process input,
- * rendering, and messages. Prefers `scheduler.yield()` (Chrome 129+), then
+ * rendering, and — crucially for cancellation — incoming messages. Prefers
  * `setImmediate` (Node), then a `MessageChannel` round-trip, then
  * `setTimeout(0)`.
  */

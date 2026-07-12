@@ -378,6 +378,103 @@ async function main(): Promise<Results> {
     }
   }
 
+  // --- 2b. progress + abort on-device --------------------------------------
+  try {
+    const X = gaussian(2000, 600, 77, 'float64');
+    const phases: string[] = [];
+    let snapshots = 0;
+    const gpu = new WebGPUPCA({
+      nComponents: 12,
+      svdSolver: 'randomized',
+      randomState: 3,
+      iteratedPower: 6,
+      minGpuElements: 1,
+    });
+    await gpu.fit(X, {
+      onProgress: (e) => {
+        phases.push(e.phase);
+        if (e.snapshot !== undefined) {
+          snapshots++;
+        }
+      },
+      snapshot: { components: true, scores: true },
+    });
+    const power = phases.filter((p) => p === 'power-iteration').length;
+    const pass =
+      gpu.backend === 'webgpu' &&
+      power === 6 &&
+      phases[phases.length - 1] === 'finalize' &&
+      snapshots === 7;
+    if (gpu.backend === 'webgpu') {
+      results.gpuExecuted = true;
+    }
+    record({
+      id: 'equiv.gpu_progress_snapshots',
+      section: 'equiv',
+      pass,
+      backend: gpu.backend,
+      detail: `power-iteration events=${power}, snapshots=${snapshots}, last=${phases[phases.length - 1]}`,
+    });
+    gpu.dispose();
+  } catch (err) {
+    record({
+      id: 'equiv.gpu_progress_snapshots',
+      section: 'equiv',
+      pass: false,
+      backend: 'error',
+      detail: String(err),
+    });
+  }
+
+  try {
+    const X = gaussian(2000, 600, 78, 'float64');
+    const gpu = new WebGPUPCA({
+      nComponents: 12,
+      svdSolver: 'randomized',
+      randomState: 3,
+      iteratedPower: 40,
+      minGpuElements: 1,
+    });
+    const controller = new AbortController();
+    let events = 0;
+    let abortName = 'none';
+    try {
+      await gpu.fit(X, {
+        signal: controller.signal,
+        onProgress: () => {
+          events++;
+          controller.abort();
+        },
+      });
+    } catch (err) {
+      abortName = (err as Error).name;
+    }
+    // The abort must surface as AbortError with NO silent CPU refit — the
+    // estimator ends up unfitted.
+    let unfitted = false;
+    try {
+      void gpu.components;
+    } catch {
+      unfitted = true;
+    }
+    record({
+      id: 'equiv.gpu_abort_no_refit',
+      section: 'equiv',
+      pass: abortName === 'AbortError' && unfitted && events >= 1,
+      backend: 'webgpu',
+      detail: `rejected=${abortName}, unfitted=${unfitted}, events=${events}`,
+    });
+    gpu.dispose();
+  } catch (err) {
+    record({
+      id: 'equiv.gpu_abort_no_refit',
+      section: 'equiv',
+      pass: false,
+      backend: 'error',
+      detail: String(err),
+    });
+  }
+
   // --- 3. sklearn fixtures on the GPU --------------------------------------
   // covariance_eigh and randomized cases only (the GPU-accelerated solvers).
   // powerIterationNormalizer='none' is excluded: sklearn documents it as

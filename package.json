@@ -24,7 +24,8 @@
     "node": ">=20"
   },
   "sideEffects": [
-    "./dist/worker/worker.js"
+    "./dist/worker/worker.js",
+    "./src/worker/worker.ts"
   ],
   "exports": {
     ".": {
@@ -58,6 +59,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:browser": "node tests/browser/run.mjs",
+    "test:browser:worker": "node tests/browser/run-worker.mjs",
     "bench": "node bench/cpu.mjs",
     "bench:browser": "node bench/browser.mjs",
     "fixtures": ".venv/bin/python python/generate_fixtures.py"
